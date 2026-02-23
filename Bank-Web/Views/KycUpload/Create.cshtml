@@ -1,0 +1,151 @@
+﻿@model Bank.Web.ViewModels.KycUploadCreateVm
+
+@{
+    ViewData["Title"] = "New KYC Upload";
+}
+
+<div class="container py-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-9 col-xl-8">
+            <div class="card shadow-sm">
+                <div class="card-body p-4">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <h3 class="mb-0">New KYC Upload</h3>
+                        <span class="badge bg-secondary">Bank App</span>
+                    </div>
+
+                    <p class="text-muted mb-4">
+                        Create a new KYC request. The final internal customer record is created only after CKYC verification.
+                    </p>
+
+                    <form asp-action="Create" method="post" enctype="multipart/form-data">
+                        @Html.AntiForgeryToken()
+
+                        <div asp-validation-summary="ModelOnly" class="alert alert-danger" role="alert"></div>
+
+                        <h6 class="text-uppercase text-muted mt-2 mb-3">Customer Details</h6>
+
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label asp-for="FirstName" class="form-label"></label>
+                                <input asp-for="FirstName" class="form-control" placeholder="First name" />
+                                <span asp-validation-for="FirstName" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label asp-for="LastName" class="form-label"></label>
+                                <input asp-for="LastName" class="form-control" placeholder="Last name" />
+                                <span asp-validation-for="LastName" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label asp-for="DateOfBirth" class="form-label">Date of Birth</label>
+                                <input asp-for="DateOfBirth" class="form-control" type="date" />
+                                <span asp-validation-for="DateOfBirth" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label asp-for="PPSN" class="form-label"></label>
+                                <input asp-for="PPSN" class="form-control" placeholder="e.g. 1234567AB" />
+                                <span asp-validation-for="PPSN" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label asp-for="Email" class="form-label"></label>
+                                <input asp-for="Email" class="form-control" placeholder="name@email.com" />
+                                <span asp-validation-for="Email" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label asp-for="Phone" class="form-label"></label>
+                                <input asp-for="Phone" class="form-control" placeholder="e.g. 089xxxxxxx" />
+                                <span asp-validation-for="Phone" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-12">
+                                <label asp-for="AddressLine1" class="form-label">Address</label>
+                                <input asp-for="AddressLine1" class="form-control" placeholder="Address line 1" />
+                                <span asp-validation-for="AddressLine1" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-4">
+                                <label asp-for="CountyId" class="form-label">County</label>
+                                <select asp-for="CountyId" class="form-select">
+                                    <option value="">Select County</option>
+                                    @foreach (var county in ViewBag.Counties)
+                                    {
+                                        <option value="@county.CountyId">@county.CountyName</option>
+                                    }
+                                </select>
+                                <span asp-validation-for="CountyId" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-4">
+                                <label asp-for="CityId" class="form-label">City</label>
+                                <select asp-for="CityId" class="form-select">
+                                    <option value="">Select City</option>
+                                    @foreach (var city in ViewBag.Cities)
+                                    {
+                                        <option value="@city.CityId">@city.CityName</option>
+                                    }
+                                </select>
+                                <span asp-validation-for="CityId" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-4">
+                                <label asp-for="Eircode" class="form-label"></label>
+                                <input asp-for="Eircode" class="form-control" placeholder="e.g. N37XXXX" />
+                                <span asp-validation-for="Eircode" class="text-danger small"></span>
+                            </div>
+                        </div>
+
+                        <hr class="my-4" />
+
+                        <h6 class="text-uppercase text-muted mb-3">Risk & Upload</h6>
+
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label asp-for="RiskRating" class="form-label">Risk Rating</label>
+                                <select asp-for="RiskRating" class="form-select">
+                                    <option value="Low">Low</option>
+                                    <option value="Medium">Medium</option>
+                                    <option value="High">High</option>
+                                </select>
+                                <span asp-validation-for="RiskRating" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div class="form-check">
+                                    <input class="form-check-input" asp-for="IsPEP" />
+                                    <label class="form-check-label" asp-for="IsPEP">Politically Exposed Person (PEP)</label>
+                                </div>
+                            </div>
+
+                            <div class="col-12">
+                                <label asp-for="Documents" class="form-label">Upload Documents (multiple)</label>
+                                <input asp-for="Documents" class="form-control" type="file" multiple />
+                                <div class="form-text">
+                                    Upload Passport/IRP/Student ID/PSC etc. (images or PDFs). Max 10MB each (demo rule).
+                                </div>
+                                <span asp-validation-for="Documents" class="text-danger small"></span>
+                            </div>
+                        </div>
+
+                        <div class="d-flex gap-2 justify-content-end mt-4">
+                            <a asp-controller="Home" asp-action="Index" class="btn btn-outline-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Submit KYC Upload</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <p class="text-center text-muted small mt-3 mb-0">
+                Tip: County/City are pulled from master tables in PostgreSQL.
+            </p>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

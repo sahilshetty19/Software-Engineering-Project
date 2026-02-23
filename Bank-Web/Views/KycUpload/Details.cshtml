@@ -1,0 +1,46 @@
+﻿@model Bank.Web.Models.KycUploadDetails
+
+<h2>KYC Upload Details</h2>
+
+<p><b>RequestRef:</b> @Model.RequestRef</p>
+<p><b>Name:</b> @Model.FirstName @Model.LastName</p>
+<p><b>DOB:</b> @Model.DateOfBirth</p>
+<p><b>PPSN:</b> @Model.PPSN</p>
+<p><b>Email:</b> @Model.Email</p>
+<p><b>Phone:</b> @Model.Phone</p>
+<p><b>County:</b> @Model.County?.CountyName</p>
+<p><b>City:</b> @Model.City?.CityName</p>
+<p><b>Status:</b> @Model.Status</p>
+
+<hr />
+
+<h3>Uploaded Documents</h3>
+
+@if (Model.Images == null || Model.Images.Count == 0)
+{
+    <p>No documents uploaded.</p>
+}
+else
+{
+    <table border="1" cellpadding="6">
+        <thead>
+            <tr>
+                <th>File Name</th>
+                <th>Type</th>
+                <th>Size (bytes)</th>
+                <th>Hash</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var img in Model.Images)
+            {
+                <tr>
+                    <td>@img.FileName</td>
+                    <td>@img.DocumentType</td>
+                    <td>@img.FileSizeBytes</td>
+                    <td style="font-size:12px">@img.FileHashSha256</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
