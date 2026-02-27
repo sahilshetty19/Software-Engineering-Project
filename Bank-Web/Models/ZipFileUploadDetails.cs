@@ -1,23 +1,29 @@
-﻿using System.ComponentModel.DataAnnotations;
+﻿using Bank.Web.Models;
+using System.ComponentModel.DataAnnotations;
 
-namespace Bank.Web.Models;
-
-public sealed class ZipFileUploadDetails
+public class ZipFileUploadDetails
 {
-    [Key] public Guid ZipUploadId { get; set; } = Guid.NewGuid();
+    [Key]
+    public Guid ZipUploadId { get; set; }
 
     public Guid KycUploadId { get; set; }
     public KycUploadDetails? KycUpload { get; set; }
+    [Required, MaxLength(255)]
+    public string ZipFileName { get; set; } = "";
 
-    [Required, MaxLength(255)] public string ZipFileName { get; set; } = "";
-    [Required, MaxLength(64)] public string ZipHashSha256 { get; set; } = "";
+    [Required, MaxLength(64)]
+    public string ZipHashSha256 { get; set; } = "";
 
     public long ZipSizeBytes { get; set; }
 
-    [Required, MaxLength(500)] public string SftpRemotePath { get; set; } = "";
+    
+    public byte[]? ZipBytes { get; set; }
 
-    public UploadStatus UploadStatus { get; set; } = UploadStatus.Queued;
+    [MaxLength(500)]
+    public string? SftpRemotePath { get; set; } 
 
-    public DateTimeOffset? UploadedAtUtc { get; set; }
+    public short UploadStatus { get; set; }
+    public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
+
     public string? FailureReason { get; set; }
 }

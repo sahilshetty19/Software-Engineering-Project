@@ -13,6 +13,7 @@ public sealed class BankCustomerDetails
     public string CkycNumber { get; set; } = "";
 
     [Required, MaxLength(100)] public string FirstName { get; set; } = "";
+    [Required, MaxLength(100)] public string MiddleName { get; set; } = "";
     [Required, MaxLength(100)] public string LastName { get; set; } = "";
     public DateOnly DateOfBirth { get; set; }
 

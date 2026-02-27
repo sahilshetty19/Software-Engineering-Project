@@ -13,6 +13,12 @@ public class KycUploadCreateVm
     [RegularExpression(@"^[a-zA-Z][a-zA-Z '\-]{0,99}$", ErrorMessage = "First name contains invalid characters.")]
     public string FirstName { get; set; } = "";
 
+    [Display(Name = "Middle Name")]
+    [Required(ErrorMessage = "Middle name is required.")]
+    [MaxLength(100)]
+    [RegularExpression(@"^[a-zA-Z][a-zA-Z '\-]{0,99}$", ErrorMessage = "Middle name contains invalid characters.")]
+    public string MiddleName { get; set; } = "";
+
     [Display(Name = "Last Name")]
     [Required(ErrorMessage = "Last name is required.")]
     [MaxLength(100)]

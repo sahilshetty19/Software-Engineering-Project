@@ -29,6 +29,8 @@ public sealed class KycUploadDetails
 
     // Customer fields (staging)
     [Required, MaxLength(100)] public string FirstName { get; set; } = "";
+   
+    [Required, MaxLength(100)] public string MiddleName { get; set; } = "";
     [Required, MaxLength(100)] public string LastName { get; set; } = "";
     public DateOnly DateOfBirth { get; set; }
 
@@ -59,4 +61,7 @@ public sealed class KycUploadDetails
     public RiskRating RiskRating { get; set; } = RiskRating.Low;
 
     public List<KycUploadImage> Images { get; set; } = new();
+    public bool SearchExecuted { get; set; } = false;
+    public bool? SearchFound { get; set; } = null; 
+    public DateTimeOffset? CkycDownloadedAtUtc { get; set; } 
 }

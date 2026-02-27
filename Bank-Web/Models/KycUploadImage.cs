@@ -26,7 +26,8 @@ public sealed class KycUploadImage
 
     [Required, MaxLength(80)]
     public string ExtractedDocNumber { get; set; } = "";
-
+    public bool IsImageValidated { get; set; }
+    public string? ImageValidationMessage { get; set; }
     public DateOnly? ExtractedExpiryDate { get; set; }
 
     public DateTimeOffset UploadedAtUtc { get; set; } = DateTimeOffset.UtcNow;

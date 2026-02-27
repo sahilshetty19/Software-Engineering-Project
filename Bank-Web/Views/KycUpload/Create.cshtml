@@ -1,4 +1,5 @@
-﻿@model Bank.Web.ViewModels.KycUploadCreateVm
+﻿```cshtml
+@model Bank.Web.ViewModels.KycUploadCreateVm
 
 @{
     ViewData["Title"] = "New KYC Upload";
@@ -26,13 +27,19 @@
                         <h6 class="text-uppercase text-muted mt-2 mb-3">Customer Details</h6>
 
                         <div class="row g-3">
-                            <div class="col-md-6">
+                            <div class="col-md-4">
                                 <label asp-for="FirstName" class="form-label"></label>
                                 <input asp-for="FirstName" class="form-control" placeholder="First name" />
                                 <span asp-validation-for="FirstName" class="text-danger small"></span>
                             </div>
 
-                            <div class="col-md-6">
+                            <div class="col-md-4">
+                                <label asp-for="MiddleName" class="form-label"></label>
+                                <input asp-for="MiddleName" class="form-control" placeholder="Middle name" />
+                                <span asp-validation-for="MiddleName" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-4">
                                 <label asp-for="LastName" class="form-label"></label>
                                 <input asp-for="LastName" class="form-control" placeholder="Last name" />
                                 <span asp-validation-for="LastName" class="text-danger small"></span>
@@ -149,3 +156,4 @@
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
 }
+```

@@ -1,9 +1,106 @@
 ﻿@model Bank.Web.Models.KycUploadDetails
 
+@{
+    ViewData["Title"] = "KYC Upload Details";
+
+    var searchExecuted = Model.SearchExecuted;
+    var searchFound = Model.SearchFound;
+    var hasCkycNumber = !string.IsNullOrWhiteSpace(Model.CkycNumber);
+
+    var canSearch = true;
+
+    var canDownload = (searchExecuted == true && searchFound == true && hasCkycNumber);
+    var canSubmitToCkyc = (searchExecuted == true && searchFound == false);
+    var canCheckStatus = (Model.Status == Bank.Web.Models.KycWorkflowStatus.Sent);
+    var canPushToInternal =
+        hasCkycNumber &&
+        (
+            (searchFound == true && Model.CkycDownloadedAtUtc != null) ||
+            (searchFound == false && Model.Status == Bank.Web.Models.KycWorkflowStatus.Completed)
+        );
+}
+
 <h2>KYC Upload Details</h2>
 
+@if (TempData["Error"] != null)
+{
+    <div style="padding:10px;border:1px solid #c00;background:#ffecec;margin:10px 0;">
+        @TempData["Error"]
+    </div>
+}
+@if (TempData["Info"] != null)
+{
+    <div style="padding:10px;border:1px solid #0a0;background:#eaffea;margin:10px 0;">
+        @TempData["Info"]
+    </div>
+}
+
+<div style="margin:10px 0;">
+    <form asp-action="SearchCkyc" method="post" style="display:inline;">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="id" value="@Model.KycUploadId" />
+        <button type="submit" @(canSearch ? "" : "disabled")>Search CKYC</button>
+    </form>
+
+    @if (canDownload)
+    {
+        <form asp-action="DownloadFromCkyc" method="post" style="display:inline;margin-left:6px;">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.KycUploadId" />
+            <button type="submit">Download CKYC Record</button>
+        </form>
+    }
+
+    @if (canSubmitToCkyc)
+    {
+        <form asp-action="SubmitToCkyc" method="post" style="display:inline;margin-left:6px;">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.KycUploadId" />
+            <button type="submit">Upload to CKYC</button>
+        </form>
+    }
+
+    @if (canCheckStatus)
+    {
+        <form asp-action="CheckCkycStatus" method="post" style="display:inline;margin-left:6px;">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.KycUploadId" />
+            <button type="submit">Check CKYC Status</button>
+        </form>
+    }
+
+    @if (canPushToInternal)
+    {
+        <form asp-action="PushToInternal" method="post" style="display:inline;margin-left:6px;">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.KycUploadId" />
+            <button type="submit">Push to Bank Records</button>
+        </form>
+    }
+</div>
+
+<hr />
+
 <p><b>RequestRef:</b> @Model.RequestRef</p>
-<p><b>Name:</b> @Model.FirstName @Model.LastName</p>
+
+@if (searchExecuted == true)
+{
+    if (searchFound == true)
+    {
+        <p><b>Search Result:</b> Found in CKYC</p>
+    }
+    else if (searchFound == false)
+    {
+        <p><b>Search Result:</b> Not found in CKYC</p>
+    }
+}
+
+@if (hasCkycNumber)
+{
+    <p><b>CKYC Number:</b> @Model.CkycNumber</p>
+}
+
+<p><b>Name:</b> @Model.FirstName @Model.MiddleName @Model.LastName</p>
 <p><b>DOB:</b> @Model.DateOfBirth</p>
 <p><b>PPSN:</b> @Model.PPSN</p>
 <p><b>Email:</b> @Model.Email</p>
@@ -11,6 +108,11 @@
 <p><b>County:</b> @Model.County?.CountyName</p>
 <p><b>City:</b> @Model.City?.CityName</p>
 <p><b>Status:</b> @Model.Status</p>
+
+@if (Model.CkycDownloadedAtUtc != null)
+{
+    <p><b>Downloaded From CKYC At:</b> @Model.CkycDownloadedAtUtc</p>
+}
 
 <hr />
 
@@ -22,7 +124,7 @@
 }
 else
 {
-    <table border="1" cellpadding="6">
+    <table border="1" cellpadding="6" style="border-collapse:collapse;">
         <thead>
             <tr>
                 <th>File Name</th>
@@ -38,7 +140,7 @@ else
                     <td>@img.FileName</td>
                     <td>@img.DocumentType</td>
                     <td>@img.FileSizeBytes</td>
-                    <td style="font-size:12px">@img.FileHashSha256</td>
+                    <td style="font-size:12px;max-width:520px;word-break:break-all;">@img.FileHashSha256</td>
                 </tr>
             }
         </tbody>

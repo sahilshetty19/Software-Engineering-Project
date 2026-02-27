@@ -94,6 +94,11 @@ namespace Bank_Web.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<string>("MiddleName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("Nationality")
                         .IsRequired()
                         .HasMaxLength(80)
@@ -420,6 +425,9 @@ namespace Bank_Web.Migrations
                     b.Property<Guid>("CityId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTimeOffset?>("CkycDownloadedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("CkycNumber")
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
@@ -485,6 +493,11 @@ namespace Bank_Web.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<string>("MiddleName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("Nationality")
                         .IsRequired()
                         .HasMaxLength(80)
@@ -515,6 +528,12 @@ namespace Bank_Web.Migrations
 
                     b.Property<short>("RiskRating")
                         .HasColumnType("smallint");
+
+                    b.Property<bool>("SearchExecuted")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool?>("SearchFound")
+                        .HasColumnType("boolean");
 
                     b.Property<short>("Source")
                         .HasColumnType("smallint");
@@ -585,6 +604,12 @@ namespace Bank_Web.Migrations
                     b.Property<byte[]>("ImageBytes")
                         .IsRequired()
                         .HasColumnType("bytea");
+
+                    b.Property<string>("ImageValidationMessage")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsImageValidated")
+                        .HasColumnType("boolean");
 
                     b.Property<Guid>("KycUploadId")
                         .HasColumnType("uuid");
@@ -688,7 +713,7 @@ namespace Bank_Web.Migrations
                     b.ToTable("SearchResponseEncrypted", (string)null);
                 });
 
-            modelBuilder.Entity("Bank.Web.Models.ZipFileUploadDetails", b =>
+            modelBuilder.Entity("ZipFileUploadDetails", b =>
                 {
                     b.Property<Guid>("ZipUploadId")
                         .ValueGeneratedOnAdd()
@@ -701,15 +726,17 @@ namespace Bank_Web.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<string>("SftpRemotePath")
-                        .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
                     b.Property<short>("UploadStatus")
                         .HasColumnType("smallint");
 
-                    b.Property<DateTimeOffset?>("UploadedAtUtc")
+                    b.Property<DateTime>("UploadedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("ZipBytes")
+                        .HasColumnType("bytea");
 
                     b.Property<string>("ZipFileName")
                         .IsRequired()
@@ -866,7 +893,7 @@ namespace Bank_Web.Migrations
                     b.Navigation("KycUpload");
                 });
 
-            modelBuilder.Entity("Bank.Web.Models.ZipFileUploadDetails", b =>
+            modelBuilder.Entity("ZipFileUploadDetails", b =>
                 {
                     b.HasOne("Bank.Web.Models.KycUploadDetails", "KycUpload")
                         .WithMany()

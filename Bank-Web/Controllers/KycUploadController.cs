@@ -1,5 +1,6 @@
 ﻿using Bank.Web.Data;
 using Bank.Web.Models;
+using Bank.Web.Services;
 using Bank.Web.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -11,25 +12,18 @@ namespace Bank.Web.Controllers;
 public class KycUploadController : Controller
 {
     private readonly BankDbContext _context;
+    private readonly CkycApiClient _ckyc;
 
-    public KycUploadController(BankDbContext context)
+    public KycUploadController(BankDbContext context, CkycApiClient ckyc)
     {
         _context = context;
+        _ckyc = ckyc;
     }
 
     [HttpGet]
     public async Task<IActionResult> Create()
     {
-        ViewBag.Counties = await _context.Counties
-            .Where(c => c.IsActive)
-            .OrderBy(c => c.CountyName)
-            .ToListAsync();
-
-        ViewBag.Cities = await _context.Cities
-            .Where(c => c.IsActive)
-            .OrderBy(c => c.CityName)
-            .ToListAsync();
-
+        await LoadDropdowns();
         return View(new KycUploadCreateVm());
     }
 
@@ -37,19 +31,6 @@ public class KycUploadController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(KycUploadCreateVm vm)
     {
-        async Task LoadDropdowns()
-        {
-            ViewBag.Counties = await _context.Counties
-                .Where(c => c.IsActive)
-                .OrderBy(c => c.CountyName)
-                .ToListAsync();
-
-            ViewBag.Cities = await _context.Cities
-                .Where(c => c.IsActive)
-                .OrderBy(c => c.CityName)
-                .ToListAsync();
-        }
-
         if (!ModelState.IsValid)
         {
             await LoadDropdowns();
@@ -63,59 +44,61 @@ public class KycUploadController : Controller
             return View(vm);
         }
 
-        // Convert UI DateTime -> DateOnly for database
         var dob = DateOnly.FromDateTime(vm.DateOfBirth);
 
-        // Unique request reference
         var requestRef = $"REQ-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
         if (requestRef.Length > 60) requestRef = requestRef[..60];
 
-        // Identity hash (demo dedupe key)
-        var identityHash = Sha256Hex($"{vm.FirstName}|{vm.LastName}|{dob:yyyy-MM-dd}|{vm.PPSN}");
+        var firstName = (vm.FirstName ?? "").Trim();
+        var middleName = (vm.MiddleName ?? "").Trim();
+        var lastName = (vm.LastName ?? "").Trim();
+        var ppsn = (vm.PPSN ?? "").Trim();
+
+        var identityHash = Sha256Hex($"{firstName}|{middleName}|{lastName}|{dob:yyyy-MM-dd}|{ppsn}");
 
         var upload = new KycUploadDetails
         {
             RequestRef = requestRef,
             Source = UploadSource.ManualForm,
-
             Status = KycWorkflowStatus.Draft,
             OcrStatus = OcrStatus.Pending,
             ValidationStatus = ValidationStatus.Pass,
             DedupeStatus = DedupeStatus.NotChecked,
-
             IdentityHash = identityHash,
 
-            FirstName = vm.FirstName.Trim(),
-            LastName = vm.LastName.Trim(),
+            FirstName = firstName,
+            MiddleName = middleName,
+            LastName = lastName,
             DateOfBirth = dob,
 
-            PPSN = vm.PPSN.Trim(),
-            Email = vm.Email.Trim(),
-            Phone = vm.Phone.Trim(),
-            AddressLine1 = vm.AddressLine1.Trim(),
+            PPSN = ppsn,
+            Email = (vm.Email ?? "").Trim(),
+            Phone = (vm.Phone ?? "").Trim(),
+            AddressLine1 = (vm.AddressLine1 ?? "").Trim(),
 
             CountyId = vm.CountyId,
             CityId = vm.CityId,
 
-            Eircode = vm.Eircode.Trim(),
+            Eircode = (vm.Eircode ?? "").Trim(),
             Country = "Ireland",
 
-            // Defaults for fields not in UI yet
             Nationality = "Ireland",
             Gender = "NA",
             Occupation = "NA",
             EmployerName = "NA",
             SourceOfFunds = "NA",
             IsPEP = vm.IsPEP,
-            RiskRating = vm.RiskRating
+            RiskRating = vm.RiskRating,
+
+            SearchExecuted = false,
+            SearchFound = null,
+            CkycDownloadedAtUtc = null,
+            CkycNumber = null
         };
 
-        // ✅ Server-side file validation
         var allowedContentTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "image/jpeg",
-            "image/png",
-            "application/pdf"
+            "image/jpeg", "image/png", "application/pdf"
         };
 
         var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -123,13 +106,12 @@ public class KycUploadController : Controller
             ".jpg", ".jpeg", ".png", ".pdf"
         };
 
-        const long maxFileBytes = 10 * 1024 * 1024; // 10MB (demo rule)
+        const long maxFileBytes = 10 * 1024 * 1024;
 
         foreach (var file in vm.Documents)
         {
             if (file == null || file.Length == 0) continue;
 
-            // File size validation
             if (file.Length > maxFileBytes)
             {
                 ModelState.AddModelError("", $"File '{file.FileName}' is too large (max 10MB).");
@@ -137,7 +119,6 @@ public class KycUploadController : Controller
                 return View(vm);
             }
 
-            // Extension validation (quick sanity check)
             var ext = Path.GetExtension(file.FileName);
             if (string.IsNullOrWhiteSpace(ext) || !allowedExtensions.Contains(ext))
             {
@@ -146,7 +127,6 @@ public class KycUploadController : Controller
                 return View(vm);
             }
 
-            // Content-Type validation (primary)
             var contentType = file.ContentType ?? "";
             if (!allowedContentTypes.Contains(contentType))
             {
@@ -159,14 +139,11 @@ public class KycUploadController : Controller
             await file.CopyToAsync(ms);
             var bytes = ms.ToArray();
 
-            // Optional: validate the actual bytes for images (light check)
-            // (Skipping deep validation for demo)
-
             var fileHash = Sha256Hex(bytes);
 
             upload.Images.Add(new KycUploadImage
             {
-                DocumentType = DocumentType.Other, // improve later (per-file doc type)
+                DocumentType = DocumentType.Other,
                 FileName = Path.GetFileName(file.FileName),
                 ContentType = contentType,
                 FileSizeBytes = file.Length,
@@ -177,7 +154,6 @@ public class KycUploadController : Controller
             });
         }
 
-        // Ensure at least 1 valid file made it through validation
         if (upload.Images.Count == 0)
         {
             ModelState.AddModelError("", "No valid documents were uploaded. Please upload JPG/PNG/PDF files.");
@@ -202,6 +178,188 @@ public class KycUploadController : Controller
 
         if (upload == null) return NotFound();
         return View(upload);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SearchCkyc(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .Include(x => x.Images)
+            .Include(x => x.County)
+            .Include(x => x.City)
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        var (ok, message, found, ckycNumber) = await _ckyc.SearchAsync(
+            upload.FirstName,
+            upload.LastName,
+            upload.DateOfBirth,
+            upload.PPSN);
+
+        if (!ok)
+        {
+            TempData["Error"] = message;
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        upload.SearchExecuted = true;
+        upload.SearchFound = found;
+        upload.CkycDownloadedAtUtc = null;
+
+        if (found && !string.IsNullOrWhiteSpace(ckycNumber))
+        {
+            upload.CkycNumber = ckycNumber;
+            TempData["Info"] = $"CKYC record found. CKYC Number: {ckycNumber}";
+        }
+        else
+        {
+            upload.CkycNumber = null;
+            TempData["Info"] = "No CKYC record found. You can upload this record to CKYC.";
+        }
+
+        await _context.SaveChangesAsync();
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DownloadFromCkyc(Guid id)
+    {
+        var upload = await _context.KycUploadDetails.FirstOrDefaultAsync(x => x.KycUploadId == id);
+        if (upload == null) return NotFound();
+
+        if (upload.SearchExecuted != true || upload.SearchFound != true || string.IsNullOrWhiteSpace(upload.CkycNumber))
+        {
+            TempData["Error"] = "Download is only available after Search FOUND a CKYC record.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        _ = await _ckyc.DownloadProfileJsonAsync(upload.CkycNumber);
+
+        upload.CkycDownloadedAtUtc = DateTimeOffset.UtcNow;
+        await _context.SaveChangesAsync();
+
+        TempData["Info"] = "CKYC record downloaded successfully. You can now push it to internal bank records.";
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SubmitToCkyc(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .Include(x => x.Images)
+            .Include(x => x.County)
+            .Include(x => x.City)
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        if (upload.SearchExecuted != true || upload.SearchFound != false)
+        {
+            TempData["Error"] = "You can only upload to CKYC after running Search and getting NOT FOUND.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var zipBytes = ZipBuilder.BuildKycZip(upload);
+
+        var requestRef = upload.RequestRef;
+        var bankCode = "BANKDEMO";
+
+        var (ok, message, submissionRef) = await _ckyc.UploadZipAsync(
+            zipBytes,
+            zipFileName: $"{requestRef}.zip",
+            bankCode: bankCode,
+            requestRef: requestRef);
+
+        if (!ok)
+        {
+            TempData["Error"] = "CKYC Upload failed: " + message;
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        upload.SubmittedAtUtc = DateTimeOffset.UtcNow;
+        upload.Status = KycWorkflowStatus.Sent;
+        await _context.SaveChangesAsync();
+
+        TempData["Info"] = $"Sent to CKYC. Tracking: {submissionRef}";
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CheckCkycStatus(Guid id)
+    {
+        var upload = await _context.KycUploadDetails.FirstOrDefaultAsync(x => x.KycUploadId == id);
+        if (upload == null) return NotFound();
+
+        if (upload.Status != KycWorkflowStatus.Sent)
+        {
+            TempData["Error"] = "You can only check status after uploading to CKYC.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var (status, message, ckycNumber) = await _ckyc.GetStatusAsync(upload.RequestRef);
+
+        TempData["Info"] = $"CKYC status: {status} - {message}";
+
+        if (status.Equals("Success", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(ckycNumber))
+        {
+            upload.CkycNumber = ckycNumber;
+            upload.CompletedAtUtc = DateTimeOffset.UtcNow;
+            upload.Status = KycWorkflowStatus.Completed;
+            await _context.SaveChangesAsync();
+            TempData["Info"] = $"CKYC Success. CKYC Number: {ckycNumber}";
+        }
+
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> PushToInternal(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .Include(x => x.Images)
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        if (string.IsNullOrWhiteSpace(upload.CkycNumber))
+        {
+            TempData["Error"] = "No CKYC Number available to push.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        if (upload.SearchFound == true && upload.CkycDownloadedAtUtc == null)
+        {
+            TempData["Error"] = "Please download the CKYC record first, then push to bank records.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        if (upload.SearchFound == false && upload.Status != KycWorkflowStatus.Completed)
+        {
+            TempData["Error"] = "Please wait for CKYC Status = Success before pushing to bank records.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        TempData["Info"] = "Pushed to internal bank records successfully (placeholder).";
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    private async Task LoadDropdowns()
+    {
+        ViewBag.Counties = await _context.Counties
+            .Where(c => c.IsActive)
+            .OrderBy(c => c.CountyName)
+            .ToListAsync();
+
+        ViewBag.Cities = await _context.Cities
+            .Where(c => c.IsActive)
+            .OrderBy(c => c.CityName)
+            .ToListAsync();
     }
 
     private static string Sha256Hex(string input)

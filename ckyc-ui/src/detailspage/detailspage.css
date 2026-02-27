@@ -1,0 +1,79 @@
+/* details page overall -------------------------------------------------- */
+.details-page {
+	background: #f8f9fa;
+}
+
+/* center the card vertically; container spacing handles horizontal
+	 centring. */
+.details-wrap {
+	width: 100%;
+	max-width: 900px;
+}
+
+/* header */
+.details-title {
+	font-size: 1.5rem;
+	font-weight: 600;
+}
+
+.details-divider {
+	border-top: 2px solid #dee2e6;
+}
+
+/* key/value list */
+.details-kv .kv-row {
+	display: flex;
+	flex-wrap: wrap;
+}
+.details-kv .kv-key {
+	font-weight: 500;
+	color: #495057;
+}
+.details-kv .kv-value {
+	color: #212529;
+}
+
+/* status pill variants */
+.status-pill {
+	display: inline-block;
+	padding: 0.25rem 0.6rem;
+	font-size: 0.75rem;
+	font-weight: 600;
+	border-radius: 0.5rem;
+	text-transform: uppercase;
+}
+.status-draft {
+	background-color: #ffc107;
+	color: #212529;
+}
+.status-approved {
+	background-color: #198754;
+	color: #fff;
+}
+.status-rejected {
+	background-color: #dc3545;
+	color: #fff;
+}
+
+/* documents table improvements */
+.docs-table tbody tr:hover {
+	background-color: #f1f3f5;
+}
+.hash-cell {
+	font-family: monospace;
+	font-size: 0.875rem;
+}
+
+/* footer */
+.details-footer .dot {
+	margin: 0 0.25rem;
+}
+
+/* responsive tweaks */
+@media (max-width: 576px) {
+	.details-kv .kv-key {
+		flex-basis: 100%;
+		margin-top: 0.5rem;
+	}
+}
+
