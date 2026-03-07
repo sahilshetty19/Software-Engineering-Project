@@ -73,7 +73,11 @@ public class KycUploadCreateVm
     [Required]
     public RiskRating RiskRating { get; set; } = RiskRating.Low;
 
-    [Display(Name = "Upload Documents")]
-    [Required(ErrorMessage = "At least one document is required.")]
-    public List<IFormFile> Documents { get; set; } = new();
+    [Display(Name = "PSC Card Front")]
+    [Required(ErrorMessage = "PSC front image is required.")]
+    public IFormFile? PscFront { get; set; }
+
+    [Display(Name = "PSC Card Back")]
+    [Required(ErrorMessage = "PSC back image is required.")]
+    public IFormFile? PscBack { get; set; }
 }

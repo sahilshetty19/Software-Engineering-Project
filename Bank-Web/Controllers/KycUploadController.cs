@@ -13,11 +13,13 @@ public class KycUploadController : Controller
 {
     private readonly BankDbContext _context;
     private readonly CkycApiClient _ckyc;
+    private readonly PscOcrService _pscOcr;
 
-    public KycUploadController(BankDbContext context, CkycApiClient ckyc)
+    public KycUploadController(BankDbContext context, CkycApiClient ckyc, PscOcrService pscOcr)
     {
         _context = context;
         _ckyc = ckyc;
+        _pscOcr = pscOcr;
     }
 
     [HttpGet]
@@ -37,9 +39,9 @@ public class KycUploadController : Controller
             return View(vm);
         }
 
-        if (vm.Documents == null || vm.Documents.Count == 0)
+        if (vm.PscFront == null || vm.PscFront.Length == 0 || vm.PscBack == null || vm.PscBack.Length == 0)
         {
-            ModelState.AddModelError("", "Please upload at least one document.");
+            ModelState.AddModelError("", "PSC Front and PSC Back are required.");
             await LoadDropdowns();
             return View(vm);
         }
@@ -93,73 +95,85 @@ public class KycUploadController : Controller
             SearchExecuted = false,
             SearchFound = null,
             CkycDownloadedAtUtc = null,
-            CkycNumber = null
+            CkycNumber = null,
+
+            DedupeExecuted = false,
+            DedupePassed = null,
+            DedupeCheckedAtUtc = null,
+            DedupeMessage = null
         };
 
-        var allowedContentTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "image/jpeg", "image/png", "application/pdf"
-        };
-
-        var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ".jpg", ".jpeg", ".png", ".pdf"
-        };
-
+        var allowedContentTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "image/jpeg", "image/png", "application/pdf" };
+        var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".jpg", ".jpeg", ".png", ".pdf" };
         const long maxFileBytes = 10 * 1024 * 1024;
 
-        foreach (var file in vm.Documents)
+        async Task<(bool ok, string err, byte[] bytes, string contentType, string fileName, long size)> ReadAndValidate(IFormFile file)
         {
-            if (file == null || file.Length == 0) continue;
+            if (file == null || file.Length == 0) return (false, "File is required.", Array.Empty<byte>(), "", "", 0);
 
             if (file.Length > maxFileBytes)
-            {
-                ModelState.AddModelError("", $"File '{file.FileName}' is too large (max 10MB).");
-                await LoadDropdowns();
-                return View(vm);
-            }
+                return (false, $"File '{file.FileName}' is too large (max 10MB).", Array.Empty<byte>(), "", "", 0);
 
             var ext = Path.GetExtension(file.FileName);
             if (string.IsNullOrWhiteSpace(ext) || !allowedExtensions.Contains(ext))
-            {
-                ModelState.AddModelError("", $"File '{file.FileName}' must be JPG, PNG, or PDF.");
-                await LoadDropdowns();
-                return View(vm);
-            }
+                return (false, $"File '{file.FileName}' must be JPG, PNG, or PDF.", Array.Empty<byte>(), "", "", 0);
 
             var contentType = file.ContentType ?? "";
             if (!allowedContentTypes.Contains(contentType))
-            {
-                ModelState.AddModelError("", $"File '{file.FileName}' must be JPG, PNG, or PDF.");
-                await LoadDropdowns();
-                return View(vm);
-            }
+                return (false, $"File '{file.FileName}' must be JPG, PNG, or PDF.", Array.Empty<byte>(), "", "", 0);
 
             await using var ms = new MemoryStream();
             await file.CopyToAsync(ms);
             var bytes = ms.ToArray();
 
-            var fileHash = Sha256Hex(bytes);
-
-            upload.Images.Add(new KycUploadImage
-            {
-                DocumentType = DocumentType.Other,
-                FileName = Path.GetFileName(file.FileName),
-                ContentType = contentType,
-                FileSizeBytes = file.Length,
-                FileHashSha256 = fileHash,
-                ImageBytes = bytes,
-                OcrText = "",
-                OcrConfidence = 0
-            });
+            return (true, "", bytes, contentType, Path.GetFileName(file.FileName), file.Length);
         }
 
-        if (upload.Images.Count == 0)
+        var front = await ReadAndValidate(vm.PscFront);
+        if (!front.ok)
         {
-            ModelState.AddModelError("", "No valid documents were uploaded. Please upload JPG/PNG/PDF files.");
+            ModelState.AddModelError("", "PSC Front: " + front.err);
             await LoadDropdowns();
             return View(vm);
         }
+
+        var back = await ReadAndValidate(vm.PscBack);
+        if (!back.ok)
+        {
+            ModelState.AddModelError("", "PSC Back: " + back.err);
+            await LoadDropdowns();
+            return View(vm);
+        }
+
+        upload.Images.Add(new KycUploadImage
+        {
+            DocumentType = DocumentType.PSCFront,
+            FileName = front.fileName,
+            ContentType = front.contentType,
+            FileSizeBytes = front.size,
+            FileHashSha256 = Sha256Hex(front.bytes),
+            ImageBytes = front.bytes,
+            OcrText = "",
+            OcrConfidence = 0,
+            IsImageValidated = false,
+            ImageValidationMessage = null,
+            ImageValidatedAtUtc = null
+        });
+
+        upload.Images.Add(new KycUploadImage
+        {
+            DocumentType = DocumentType.PSCBack,
+            FileName = back.fileName,
+            ContentType = back.contentType,
+            FileSizeBytes = back.size,
+            FileHashSha256 = Sha256Hex(back.bytes),
+            ImageBytes = back.bytes,
+            OcrText = "",
+            OcrConfidence = 0,
+            IsImageValidated = false,
+            ImageValidationMessage = null,
+            ImageValidatedAtUtc = null
+        });
 
         _context.KycUploadDetails.Add(upload);
         await _context.SaveChangesAsync();
@@ -180,20 +194,185 @@ public class KycUploadController : Controller
         return View(upload);
     }
 
+    [HttpGet]
+    public async Task<IActionResult> Document(Guid id)
+    {
+        var doc = await _context.KycUploadImages
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.KycUploadImageId == id);
+
+        if (doc == null) return NotFound();
+
+        var contentType = string.IsNullOrWhiteSpace(doc.ContentType) ? "application/octet-stream" : doc.ContentType;
+        return File(doc.ImageBytes, contentType, doc.FileName);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> ValidatePscFront(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .Include(x => x.Images)
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        var front = upload.Images.FirstOrDefault(x => x.DocumentType == DocumentType.PSCFront);
+        if (front == null)
+        {
+            TempData["Error"] = "PSC Front not found.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var ocr = _pscOcr.ReadText(front.ImageBytes);
+        front.OcrText = ocr.Text ?? "";
+        front.OcrConfidence = ocr.Confidence;
+
+        var (forenameRaw, surnameRaw) = ExtractPscNameParts(front.OcrText);
+
+        var expectedForename = NormalizeForMatch($"{upload.FirstName} {upload.MiddleName}".Trim());
+        var expectedSurname = NormalizeForMatch($"{upload.LastName}".Trim());
+
+        var extractedForename = NormalizeForMatch(forenameRaw);
+        var extractedSurname = NormalizeForMatch(surnameRaw);
+
+        var ok = extractedForename.Contains(expectedForename) && extractedSurname.Contains(expectedSurname);
+
+        front.IsImageValidated = ok;
+        front.ImageValidatedAtUtc = DateTimeOffset.UtcNow;
+
+        var expectedFull = $"{upload.FirstName} {upload.MiddleName} {upload.LastName}".Replace("  ", " ").Trim();
+        var extractedFull = $"{forenameRaw} {surnameRaw}".Replace("  ", " ").Trim();
+
+        front.ImageValidationMessage = ok
+            ? $"PSC Front validated. Name matched: {expectedFull}"
+            : $"PSC Front validation failed. Expected name: {expectedFull}. OCR name extracted: '{extractedFull}'. Full OCR: '{front.OcrText}'";
+
+        await _context.SaveChangesAsync();
+
+        TempData[ok ? "Info" : "Error"] = front.ImageValidationMessage;
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> ValidatePscBack(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .Include(x => x.Images)
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        var back = upload.Images.FirstOrDefault(x => x.DocumentType == DocumentType.PSCBack);
+        if (back == null)
+        {
+            TempData["Error"] = "PSC Back not found.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var ocr = _pscOcr.ReadText(back.ImageBytes);
+        back.OcrText = ocr.Text ?? "";
+        back.OcrConfidence = ocr.Confidence;
+
+        var expected = NormalizeForMatch(upload.PPSN);
+        var extracted = NormalizeForMatch(back.OcrText);
+
+        var ok = extracted.Contains(expected);
+
+        back.IsImageValidated = ok;
+        back.ImageValidatedAtUtc = DateTimeOffset.UtcNow;
+        back.ImageValidationMessage = ok
+            ? $"PSC Back validated. PPSN matched: {upload.PPSN.Trim()}"
+            : $"PSC Back validation failed. Expected PPSN: {upload.PPSN.Trim()}. Full OCR: '{back.OcrText}'";
+
+        await _context.SaveChangesAsync();
+
+        TempData[ok ? "Info" : "Error"] = back.ImageValidationMessage;
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CheckDedupe(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .Include(x => x.Images)
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        var frontOk = upload.Images.Any(x => x.DocumentType == DocumentType.PSCFront && x.IsImageValidated);
+        var backOk = upload.Images.Any(x => x.DocumentType == DocumentType.PSCBack && x.IsImageValidated);
+
+        if (!frontOk || !backOk)
+        {
+            TempData["Error"] = "Please validate PSC Front and PSC Back before dedupe check.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var fn = (upload.FirstName ?? "").Trim().ToUpperInvariant();
+        var mn = (upload.MiddleName ?? "").Trim().ToUpperInvariant();
+        var ln = (upload.LastName ?? "").Trim().ToUpperInvariant();
+        var ppsn = (upload.PPSN ?? "").Trim().ToUpperInvariant();
+
+        var exists = await _context.BankCustomerDetails
+            .AsNoTracking()
+            .AnyAsync(c =>
+                c.DateOfBirth == upload.DateOfBirth &&
+                c.FirstName.ToUpper() == fn &&
+                c.MiddleName.ToUpper() == mn &&
+                c.LastName.ToUpper() == ln &&
+                c.PPSN.ToUpper() == ppsn
+            );
+
+        upload.DedupeExecuted = true;
+        upload.DedupeCheckedAtUtc = DateTimeOffset.UtcNow;
+        upload.DedupePassed = exists;
+
+        if (exists)
+        {
+            upload.Status = KycWorkflowStatus.KycDone;
+            upload.DedupeMessage = "Dedupe PASS: customer already exists in bank records. No CKYC needed.";
+        }
+        else
+        {
+            upload.DedupeMessage = "Dedupe FAIL: customer not found in bank records. Proceed to CKYC Search.";
+        }
+
+        await _context.SaveChangesAsync();
+        TempData["Info"] = upload.DedupeMessage;
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
     [HttpPost]
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> SearchCkyc(Guid id)
     {
         var upload = await _context.KycUploadDetails
             .Include(x => x.Images)
-            .Include(x => x.County)
-            .Include(x => x.City)
             .FirstOrDefaultAsync(x => x.KycUploadId == id);
 
         if (upload == null) return NotFound();
 
+        var frontOk = upload.Images.Any(x => x.DocumentType == DocumentType.PSCFront && x.IsImageValidated);
+        var backOk = upload.Images.Any(x => x.DocumentType == DocumentType.PSCBack && x.IsImageValidated);
+
+        if (!frontOk || !backOk)
+        {
+            TempData["Error"] = "Validate PSC Front and PSC Back first.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        if (upload.DedupeExecuted != true || upload.DedupePassed != false)
+        {
+            TempData["Error"] = "CKYC Search is only allowed after Dedupe FAIL.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
         var (ok, message, found, ckycNumber) = await _ckyc.SearchAsync(
             upload.FirstName,
+            upload.MiddleName,
             upload.LastName,
             upload.DateOfBirth,
             upload.PPSN);
@@ -251,8 +430,6 @@ public class KycUploadController : Controller
     {
         var upload = await _context.KycUploadDetails
             .Include(x => x.Images)
-            .Include(x => x.County)
-            .Include(x => x.City)
             .FirstOrDefaultAsync(x => x.KycUploadId == id);
 
         if (upload == null) return NotFound();
@@ -303,8 +480,6 @@ public class KycUploadController : Controller
 
         var (status, message, ckycNumber) = await _ckyc.GetStatusAsync(upload.RequestRef);
 
-        TempData["Info"] = $"CKYC status: {status} - {message}";
-
         if (status.Equals("Success", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(ckycNumber))
         {
             upload.CkycNumber = ckycNumber;
@@ -312,8 +487,10 @@ public class KycUploadController : Controller
             upload.Status = KycWorkflowStatus.Completed;
             await _context.SaveChangesAsync();
             TempData["Info"] = $"CKYC Success. CKYC Number: {ckycNumber}";
+            return RedirectToAction(nameof(Details), new { id });
         }
 
+        TempData["Info"] = $"CKYC status: {status} - {message}";
         return RedirectToAction(nameof(Details), new { id });
     }
 
@@ -323,6 +500,7 @@ public class KycUploadController : Controller
     {
         var upload = await _context.KycUploadDetails
             .Include(x => x.Images)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(x => x.KycUploadId == id);
 
         if (upload == null) return NotFound();
@@ -335,31 +513,181 @@ public class KycUploadController : Controller
 
         if (upload.SearchFound == true && upload.CkycDownloadedAtUtc == null)
         {
-            TempData["Error"] = "Please download the CKYC record first, then push to bank records.";
+            TempData["Error"] = "Download the CKYC record first, then push.";
             return RedirectToAction(nameof(Details), new { id });
         }
 
         if (upload.SearchFound == false && upload.Status != KycWorkflowStatus.Completed)
         {
-            TempData["Error"] = "Please wait for CKYC Status = Success before pushing to bank records.";
+            TempData["Error"] = "Wait for CKYC Status = Success before pushing.";
             return RedirectToAction(nameof(Details), new { id });
         }
 
-        TempData["Info"] = "Pushed to internal bank records successfully (placeholder).";
+        var existingCustomerId = await _context.BankCustomerDetails
+            .AsNoTracking()
+            .Where(c => c.CkycNumber == upload.CkycNumber)
+            .Select(c => (Guid?)c.BankCustomerId)
+            .FirstOrDefaultAsync();
+
+        Guid bankCustomerId;
+
+        if (existingCustomerId.HasValue)
+        {
+            bankCustomerId = existingCustomerId.Value;
+
+            var cust = await _context.BankCustomerDetails.FirstAsync(x => x.BankCustomerId == bankCustomerId);
+            cust.KycUploadId = upload.KycUploadId;
+            cust.FirstName = upload.FirstName;
+            cust.MiddleName = upload.MiddleName;
+            cust.LastName = upload.LastName;
+            cust.DateOfBirth = upload.DateOfBirth;
+            cust.PPSN = upload.PPSN;
+            cust.Email = upload.Email;
+            cust.Phone = upload.Phone;
+            cust.AddressLine1 = upload.AddressLine1;
+            cust.CountyId = upload.CountyId;
+            cust.CityId = upload.CityId;
+            cust.Eircode = upload.Eircode;
+            cust.Country = upload.Country;
+            cust.Nationality = upload.Nationality;
+            cust.Gender = upload.Gender;
+            cust.Occupation = upload.Occupation;
+            cust.EmployerName = upload.EmployerName;
+            cust.SourceOfFunds = upload.SourceOfFunds;
+            cust.IsPEP = upload.IsPEP;
+            cust.RiskRating = upload.RiskRating;
+            cust.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            var cust = new BankCustomerDetails
+            {
+                BankCustomerId = Guid.NewGuid(),
+                KycUploadId = upload.KycUploadId,
+                CkycNumber = upload.CkycNumber,
+
+                FirstName = upload.FirstName,
+                MiddleName = upload.MiddleName,
+                LastName = upload.LastName,
+                DateOfBirth = upload.DateOfBirth,
+
+                Nationality = upload.Nationality,
+                Gender = upload.Gender,
+                PPSN = upload.PPSN,
+
+                Email = upload.Email,
+                Phone = upload.Phone,
+
+                AddressLine1 = upload.AddressLine1,
+                CountyId = upload.CountyId,
+                CityId = upload.CityId,
+                Eircode = upload.Eircode,
+                Country = upload.Country,
+
+                Occupation = upload.Occupation,
+                EmployerName = upload.EmployerName,
+                SourceOfFunds = upload.SourceOfFunds,
+
+                IsPEP = upload.IsPEP,
+                RiskRating = upload.RiskRating,
+
+                IsActive = true,
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            };
+
+            _context.BankCustomerDetails.Add(cust);
+            bankCustomerId = cust.BankCustomerId;
+        }
+
+        var existingHashes = await _context.CustomerImages
+            .AsNoTracking()
+            .Where(i => i.BankCustomerId == bankCustomerId)
+            .Select(i => i.FileHashSha256)
+            .ToListAsync();
+
+        var hashSet = new HashSet<string>(existingHashes, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var img in upload.Images)
+        {
+            if (img.ImageBytes == null || img.ImageBytes.Length == 0) continue;
+            if (string.IsNullOrWhiteSpace(img.FileHashSha256)) continue;
+            if (hashSet.Contains(img.FileHashSha256)) continue;
+
+            _context.CustomerImages.Add(new CustomerImage
+            {
+                CustomerImageId = Guid.NewGuid(),
+                BankCustomerId = bankCustomerId,
+                DocumentType = img.DocumentType,
+                FileName = img.FileName,
+                ContentType = string.IsNullOrWhiteSpace(img.ContentType) ? "application/octet-stream" : img.ContentType,
+                FileSizeBytes = img.FileSizeBytes,
+                FileHashSha256 = img.FileHashSha256,
+                ImageBytes = img.ImageBytes,
+                StoredAtUtc = DateTimeOffset.UtcNow
+            });
+
+            hashSet.Add(img.FileHashSha256);
+        }
+
+        upload.Status = KycWorkflowStatus.KycDone;
+        await _context.SaveChangesAsync();
+
+        TempData["Info"] = "Pushed to internal bank records successfully.";
         return RedirectToAction(nameof(Details), new { id });
     }
 
     private async Task LoadDropdowns()
     {
-        ViewBag.Counties = await _context.Counties
-            .Where(c => c.IsActive)
-            .OrderBy(c => c.CountyName)
-            .ToListAsync();
+        ViewBag.Counties = await _context.Counties.Where(c => c.IsActive).OrderBy(c => c.CountyName).ToListAsync();
+        ViewBag.Cities = await _context.Cities.Where(c => c.IsActive).OrderBy(c => c.CityName).ToListAsync();
+    }
 
-        ViewBag.Cities = await _context.Cities
-            .Where(c => c.IsActive)
-            .OrderBy(c => c.CityName)
-            .ToListAsync();
+    private static (string Forename, string Surname) ExtractPscNameParts(string ocrText)
+    {
+        var t = ocrText ?? "";
+        var cleaned = new string(t.Select(ch => (char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch) || ch == '|') ? ch : ' ').ToArray());
+
+        string afterLabel(string label)
+        {
+            var idx = cleaned.IndexOf(label, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return "";
+            var start = idx + label.Length;
+            if (start >= cleaned.Length) return "";
+            var rest = cleaned[start..];
+
+            var stopWords = new[]
+            {
+                "|", "TUSAINM", "SLOINNE", "FORENAME", "SURNAME", "DATA", "DATE", "CARTE", "PUBLIC", "SERVICES"
+            };
+
+            var cutPos = rest.Length;
+
+            foreach (var w in stopWords)
+            {
+                var p = rest.IndexOf(w, StringComparison.OrdinalIgnoreCase);
+                if (p >= 0) cutPos = Math.Min(cutPos, p);
+            }
+
+            rest = rest[..cutPos];
+            return string.Join(' ', rest.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
+        }
+
+        var surname = afterLabel("SURNAME");
+        var forename = afterLabel("FORENAME");
+
+        return (forename, surname);
+    }
+
+    private static string NormalizeForMatch(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        var sb = new StringBuilder(s.Length);
+        foreach (var ch in s)
+        {
+            if (char.IsLetterOrDigit(ch) || ch == ' ') sb.Append(ch);
+            else sb.Append(' ');
+        }
+        return string.Join(' ', sb.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim().ToUpperInvariant();
     }
 
     private static string Sha256Hex(string input)

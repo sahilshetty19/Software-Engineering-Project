@@ -20,6 +20,7 @@ public sealed class BankDbContext : DbContext
     public DbSet<KycUpdationResponse> KycUpdationResponses => Set<KycUpdationResponse>();
 
     public DbSet<BankCustomerDetails> BankCustomerDetails => Set<BankCustomerDetails>();
+    
     public DbSet<CustomerImage> CustomerImages => Set<CustomerImage>();
 
     public DbSet<BankEmployee> BankEmployees => Set<BankEmployee>();

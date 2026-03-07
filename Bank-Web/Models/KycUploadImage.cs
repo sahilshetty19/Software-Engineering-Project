@@ -28,6 +28,7 @@ public sealed class KycUploadImage
     public string ExtractedDocNumber { get; set; } = "";
     public bool IsImageValidated { get; set; }
     public string? ImageValidationMessage { get; set; }
+    public DateTimeOffset? ImageValidatedAtUtc { get; set; }
     public DateOnly? ExtractedExpiryDate { get; set; }
 
     public DateTimeOffset UploadedAtUtc { get; set; } = DateTimeOffset.UtcNow;

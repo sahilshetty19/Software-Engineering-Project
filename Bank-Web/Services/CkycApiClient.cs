@@ -28,7 +28,6 @@ public sealed class CkycApiClient
         var fileContent = new ByteArrayContent(zipBytes);
         fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("application/zip");
 
-        // IMPORTANT: match CKYC.Server DTO property names (ZipFile/BankCode/RequestRef)
         form.Add(fileContent, "ZipFile", zipFileName);
         form.Add(new StringContent(bankCode), "BankCode");
         form.Add(new StringContent(requestRef), "RequestRef");
@@ -79,6 +78,7 @@ public sealed class CkycApiClient
 
     public async Task<(bool ok, string message, bool found, string? ckycNumber)> SearchAsync(
         string firstName,
+        string middleName,
         string lastName,
         DateOnly dob,
         string ppsn,
@@ -89,6 +89,7 @@ public sealed class CkycApiClient
         var req = new CkycSearchRequestDto
         {
             FirstName = firstName,
+            MiddleName = middleName,
             LastName = lastName,
             DateOfBirth = dob,
             PPSN = ppsn

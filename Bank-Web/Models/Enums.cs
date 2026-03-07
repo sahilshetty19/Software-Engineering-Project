@@ -4,14 +4,14 @@ public enum UploadSource : short { ManualForm = 0, ExcelUpload = 1 }
 
 public enum KycWorkflowStatus : short
 {
-    Draft = 0, OcrDone = 1, Validated = 2, Zipped = 3, Sent = 4, Completed = 5, Failed = 6
+    Draft = 0, OcrDone = 1, Validated = 2, Zipped = 3, Sent = 4, Completed = 5, Failed = 6, KycDone = 7
 }
 
 public enum OcrStatus : short { Pending = 0, Completed = 1, Failed = 2 }
 public enum ValidationStatus : short { Pass = 0, NeedsReview = 1, Fail = 2 }
 public enum DedupeStatus : short { NotChecked = 0, DuplicateFound = 1, Unique = 2 }
 
-public enum DocumentType : short { PSC = 0, IRP = 1, Passport = 2, StudentID = 3, POA = 4, Other = 99 }
+public enum DocumentType : short { PSC = 0, IRP = 1, Passport = 2, StudentID = 3, POA = 4, Other = 99, PSCFront = 10, PSCBack = 11}
 public enum FileRole : short { POI = 0, POA = 1, Photo = 2, Other = 99 }
 
 public enum UploadStatus : short { Queued = 0, Uploaded = 1, Failed = 2 }

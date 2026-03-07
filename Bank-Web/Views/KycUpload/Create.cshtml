@@ -1,5 +1,4 @@
-﻿```cshtml
-@model Bank.Web.ViewModels.KycUploadCreateVm
+﻿@model Bank.Web.ViewModels.KycUploadCreateVm
 
 @{
     ViewData["Title"] = "New KYC Upload";
@@ -16,7 +15,7 @@
                     </div>
 
                     <p class="text-muted mb-4">
-                        Create a new KYC request. The final internal customer record is created only after CKYC verification.
+                        PSC Front and Back are mandatory (PPSN required).
                     </p>
 
                     <form asp-action="Create" method="post" enctype="multipart/form-data">
@@ -108,7 +107,7 @@
 
                         <hr class="my-4" />
 
-                        <h6 class="text-uppercase text-muted mb-3">Risk & Upload</h6>
+                        <h6 class="text-uppercase text-muted mb-3">Risk & PSC Upload</h6>
 
                         <div class="row g-3">
                             <div class="col-md-4">
@@ -128,13 +127,18 @@
                                 </div>
                             </div>
 
-                            <div class="col-12">
-                                <label asp-for="Documents" class="form-label">Upload Documents (multiple)</label>
-                                <input asp-for="Documents" class="form-control" type="file" multiple />
-                                <div class="form-text">
-                                    Upload Passport/IRP/Student ID/PSC etc. (images or PDFs). Max 10MB each (demo rule).
-                                </div>
-                                <span asp-validation-for="Documents" class="text-danger small"></span>
+                            <div class="col-12"></div>
+
+                            <div class="col-md-6">
+                                <label asp-for="PscFront" class="form-label"></label>
+                                <input asp-for="PscFront" class="form-control" type="file" accept=".jpg,.jpeg,.png,.pdf,image/*,application/pdf" />
+                                <span asp-validation-for="PscFront" class="text-danger small"></span>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label asp-for="PscBack" class="form-label"></label>
+                                <input asp-for="PscBack" class="form-control" type="file" accept=".jpg,.jpeg,.png,.pdf,image/*,application/pdf" />
+                                <span asp-validation-for="PscBack" class="text-danger small"></span>
                             </div>
                         </div>
 
@@ -156,4 +160,3 @@
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
 }
-```

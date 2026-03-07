@@ -8,7 +8,14 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllersWithViews();
 builder.Services.AddDbContext<BankDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("BankDb")));
+{
+    options.UseNpgsql(builder.Configuration.GetConnectionString("BankDb"));
+    options.EnableSensitiveDataLogging();
+    options.EnableDetailedErrors();
+    options.LogTo(Console.WriteLine, LogLevel.Information);
+});
+//builder.Services.AddDbContext<BankDbContext>(options =>
+//    options.UseNpgsql(builder.Configuration.GetConnectionString("BankDb")));
 builder.Services.AddHttpClient("CKYC", client =>
 {
     var baseUrl = builder.Configuration["CKYC:BaseUrl"];
@@ -16,6 +23,7 @@ builder.Services.AddHttpClient("CKYC", client =>
 });
 builder.Services.AddScoped<CkycApiClient>();
 builder.Services.AddScoped<OcrService>();
+builder.Services.AddSingleton<PscOcrService>();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("ReactDev", policy =>

@@ -3,6 +3,7 @@ using System;
 using Bank.Web.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Bank_Web.Migrations
 {
     [DbContext(typeof(BankDbContext))]
-    partial class BankDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260227041038_AddImageValidatedAtUtcToKycUploadImages")]
+    partial class AddImageValidatedAtUtcToKycUploadImages
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -448,18 +451,6 @@ namespace Bank_Web.Migrations
 
                     b.Property<DateOnly>("DateOfBirth")
                         .HasColumnType("date");
-
-                    b.Property<DateTimeOffset?>("DedupeCheckedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("DedupeExecuted")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("DedupeMessage")
-                        .HasColumnType("text");
-
-                    b.Property<bool?>("DedupePassed")
-                        .HasColumnType("boolean");
 
                     b.Property<short>("DedupeStatus")
                         .HasColumnType("smallint");

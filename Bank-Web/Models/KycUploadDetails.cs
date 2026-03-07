@@ -62,6 +62,10 @@ public sealed class KycUploadDetails
 
     public List<KycUploadImage> Images { get; set; } = new();
     public bool SearchExecuted { get; set; } = false;
-    public bool? SearchFound { get; set; } = null; 
+    public bool? SearchFound { get; set; } = null;
+    public bool DedupeExecuted { get; set; }
+    public bool? DedupePassed { get; set; }
+    public DateTimeOffset? DedupeCheckedAtUtc { get; set; }
+    public string? DedupeMessage { get; set; }
     public DateTimeOffset? CkycDownloadedAtUtc { get; set; } 
 }

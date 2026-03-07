@@ -3,16 +3,32 @@
 @{
     ViewData["Title"] = "KYC Upload Details";
 
+    var pscFront = Model.Images?.FirstOrDefault(x => x.DocumentType == Bank.Web.Models.DocumentType.PSCFront);
+    var pscBack = Model.Images?.FirstOrDefault(x => x.DocumentType == Bank.Web.Models.DocumentType.PSCBack);
+
+    var pscFrontOk = (pscFront?.IsImageValidated == true);
+    var pscBackOk = (pscBack?.IsImageValidated == true);
+    var imagesValidated = pscFrontOk && pscBackOk;
+
+    var dedupeExecuted = Model.DedupeExecuted;
+    var dedupePassed = Model.DedupePassed;
+
     var searchExecuted = Model.SearchExecuted;
     var searchFound = Model.SearchFound;
     var hasCkycNumber = !string.IsNullOrWhiteSpace(Model.CkycNumber);
 
-    var canSearch = true;
+    var canCheckDedupe = imagesValidated;
 
-    var canDownload = (searchExecuted == true && searchFound == true && hasCkycNumber);
-    var canSubmitToCkyc = (searchExecuted == true && searchFound == false);
-    var canCheckStatus = (Model.Status == Bank.Web.Models.KycWorkflowStatus.Sent);
+    var canSearchCkyc = imagesValidated && dedupeExecuted && dedupePassed == false;
+
+    var canDownload = imagesValidated && dedupeExecuted && dedupePassed == false && searchExecuted == true && searchFound == true && hasCkycNumber;
+
+    var canSubmitToCkyc = imagesValidated && dedupeExecuted && dedupePassed == false && searchExecuted == true && searchFound == false;
+
+    var canCheckStatus = imagesValidated && dedupeExecuted && dedupePassed == false && (Model.Status == Bank.Web.Models.KycWorkflowStatus.Sent);
+
     var canPushToInternal =
+        imagesValidated &&
         hasCkycNumber &&
         (
             (searchFound == true && Model.CkycDownloadedAtUtc != null) ||
@@ -36,11 +52,23 @@
 }
 
 <div style="margin:10px 0;">
-    <form asp-action="SearchCkyc" method="post" style="display:inline;">
-        @Html.AntiForgeryToken()
-        <input type="hidden" name="id" value="@Model.KycUploadId" />
-        <button type="submit" @(canSearch ? "" : "disabled")>Search CKYC</button>
-    </form>
+    @if (canCheckDedupe)
+    {
+        <form asp-action="CheckDedupe" method="post" style="display:inline;">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.KycUploadId" />
+            <button type="submit">Check Dedupe</button>
+        </form>
+    }
+
+    @if (canSearchCkyc)
+    {
+        <form asp-action="SearchCkyc" method="post" style="display:inline;margin-left:6px;">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="id" value="@Model.KycUploadId" />
+            <button type="submit">Search CKYC</button>
+        </form>
+    }
 
     @if (canDownload)
     {
@@ -83,15 +111,35 @@
 
 <p><b>RequestRef:</b> @Model.RequestRef</p>
 
+@if (Model.DedupeExecuted)
+{
+    if (Model.DedupePassed == true)
+    {
+        <p><b>Dedupe Result:</b> PASS (Customer already exists in bank records)</p>
+        if (!string.IsNullOrWhiteSpace(Model.DedupeMessage))
+        {
+            <p><b>Dedupe Message:</b> @Model.DedupeMessage</p>
+        }
+    }
+    else if (Model.DedupePassed == false)
+    {
+        <p><b>Dedupe Result:</b> FAIL (Customer not found in bank records)</p>
+        if (!string.IsNullOrWhiteSpace(Model.DedupeMessage))
+        {
+            <p><b>Dedupe Message:</b> @Model.DedupeMessage</p>
+        }
+    }
+}
+
 @if (searchExecuted == true)
 {
     if (searchFound == true)
     {
-        <p><b>Search Result:</b> Found in CKYC</p>
+        <p><b>CKYC Search Result:</b> Found</p>
     }
     else if (searchFound == false)
     {
-        <p><b>Search Result:</b> Not found in CKYC</p>
+        <p><b>CKYC Search Result:</b> Not found</p>
     }
 }
 
@@ -116,33 +164,80 @@
 
 <hr />
 
-<h3>Uploaded Documents</h3>
+<h3>PSC Documents</h3>
 
-@if (Model.Images == null || Model.Images.Count == 0)
+@if (pscFront == null && pscBack == null)
 {
-    <p>No documents uploaded.</p>
+    <p>No PSC documents uploaded.</p>
 }
 else
 {
-    <table border="1" cellpadding="6" style="border-collapse:collapse;">
-        <thead>
-            <tr>
-                <th>File Name</th>
-                <th>Type</th>
-                <th>Size (bytes)</th>
-                <th>Hash</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var img in Model.Images)
-            {
-                <tr>
-                    <td>@img.FileName</td>
-                    <td>@img.DocumentType</td>
-                    <td>@img.FileSizeBytes</td>
-                    <td style="font-size:12px;max-width:520px;word-break:break-all;">@img.FileHashSha256</td>
-                </tr>
-            }
-        </tbody>
-    </table>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;">
+        @if (pscFront != null)
+        {
+            <div style="border:1px solid #ddd;padding:12px;max-width:420px;">
+                <div style="font-weight:600;margin-bottom:8px;">PSC Front</div>
+
+                <div style="margin-bottom:8px;">
+                    <img src="@Url.Action("Document", "KycUpload", new { id = pscFront.KycUploadImageId })"
+                         style="max-width:400px;max-height:260px;border:1px solid #ccc;"
+                         alt="PSC Front" />
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(pscFront.OcrText))
+                {
+                    <div style="margin:10px 0;">
+                        <div style="font-weight:600;margin-bottom:6px;">PSC Front OCR (temporary)</div>
+                        <pre style="white-space:pre-wrap;max-height:220px;overflow:auto;border:1px solid #ddd;padding:10px;background:#fafafa;margin:0;">@pscFront.OcrText</pre>
+                        <div style="margin-top:6px;font-size:12px;color:#555;">
+                            <b>Confidence:</b> @pscFront.OcrConfidence
+                        </div>
+                    </div>
+                }
+
+                <div style="font-size:12px;color:#555;margin-bottom:8px;">
+                    <div><b>File:</b> @pscFront.FileName</div>
+                    <div><b>Validated:</b> @(pscFront.IsImageValidated ? "Yes" : "No")</div>
+                    @if (!string.IsNullOrWhiteSpace(pscFront.ImageValidationMessage))
+                    {
+                        <div><b>Message:</b> @pscFront.ImageValidationMessage</div>
+                    }
+                </div>
+
+                <form asp-action="ValidatePscFront" method="post" style="display:inline;">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="id" value="@Model.KycUploadId" />
+                    <button type="submit">Validate PSC Front</button>
+                </form>
+            </div>
+        }
+
+        @if (pscBack != null)
+        {
+            <div style="border:1px solid #ddd;padding:12px;max-width:420px;">
+                <div style="font-weight:600;margin-bottom:8px;">PSC Back</div>
+
+                <div style="margin-bottom:8px;">
+                    <img src="@Url.Action("Document", "KycUpload", new { id = pscBack.KycUploadImageId })"
+                         style="max-width:400px;max-height:260px;border:1px solid #ccc;"
+                         alt="PSC Back" />
+                </div>
+
+                <div style="font-size:12px;color:#555;margin-bottom:8px;">
+                    <div><b>File:</b> @pscBack.FileName</div>
+                    <div><b>Validated:</b> @(pscBack.IsImageValidated ? "Yes" : "No")</div>
+                    @if (!string.IsNullOrWhiteSpace(pscBack.ImageValidationMessage))
+                    {
+                        <div><b>Message:</b> @pscBack.ImageValidationMessage</div>
+                    }
+                </div>
+
+                <form asp-action="ValidatePscBack" method="post" style="display:inline;">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="id" value="@Model.KycUploadId" />
+                    <button type="submit">Validate PSC Back</button>
+                </form>
+            </div>
+        }
+    </div>
 }
