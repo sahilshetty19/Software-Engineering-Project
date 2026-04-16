@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Container, Row, Col, Card, ListGroup, Form, Button, Badge, Table } from "react-bootstrap";
+import { Container, Row, Col, Card, ListGroup, Form, Button, Badge, Table, Alert } from "react-bootstrap";
 import {
   getKycById,
   API_BASE_URL,
   getDownloadUrl,
+  updateFailedKycRecord,
+  restartFailedKycAutomation,
 } from "../../services/kycService";
 
 function ReadOnlyField({ label, value }) {
@@ -12,6 +14,15 @@ function ReadOnlyField({ label, value }) {
     <Form.Group className="mb-3">
       <Form.Label>{label}</Form.Label>
       <Form.Control value={value || ""} readOnly />
+    </Form.Group>
+  );
+}
+
+function EditableField({ label, name, value, onChange, type = "text" }) {
+  return (
+    <Form.Group className="mb-3">
+      <Form.Label>{label}</Form.Label>
+      <Form.Control type={type} name={name} value={value || ""} onChange={onChange} />
     </Form.Group>
   );
 }
@@ -89,11 +100,50 @@ function getWorkflowStepBadge(status) {
   }
 }
 
+function getAutomationBadge(status) {
+  switch ((status || "").toLowerCase()) {
+    case "completed":
+      return <Badge bg="success">Completed</Badge>;
+    case "queued":
+      return <Badge bg="secondary">Queued</Badge>;
+    case "running":
+      return <Badge bg="primary">Running</Badge>;
+    case "waiting retry":
+      return (
+        <Badge bg="warning" text="dark">
+          Waiting Retry
+        </Badge>
+      );
+    case "terminal failed":
+      return <Badge bg="danger">Terminal Failed</Badge>;
+    default:
+      return <Badge bg="secondary">{status || "Unknown"}</Badge>;
+  }
+}
+
 function formatDateTime(value) {
   if (!value) return "-";
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return value;
   return dt.toLocaleString();
+}
+
+function buildEditState(record) {
+  return {
+    firstName: record.firstName || "",
+    middleName: record.middleName || "",
+    lastName: record.lastName || "",
+    dateOfBirth: record.dateOfBirth || "",
+    ppsNumber: record.ppsNumber || "",
+    emailAddress: record.emailAddress || "",
+    phoneNumber: record.phoneNumber || "",
+    address: record.address || "",
+    county: record.county || "",
+    city: record.city || "",
+    eircode: record.eircode || "",
+    riskRating: record.riskRating || "Low",
+    isPEP: Boolean(record.isPEP),
+  };
 }
 
 export default function KycDetails() {
@@ -103,12 +153,21 @@ export default function KycDetails() {
   const [record, setRecord] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [replacementFiles, setReplacementFiles] = useState({ pscFront: null, pscBack: null });
+  const [actionMessage, setActionMessage] = useState("");
+  const [actionVariant, setActionVariant] = useState("success");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
 
   const loadRecord = useCallback(async () => {
     try {
       setLoading(true);
       const res = await getKycById(id);
       setRecord(res.data);
+      setEditForm(buildEditState(res.data));
+      setReplacementFiles({ pscFront: null, pscBack: null });
       setError("");
     } catch (err) {
       console.error(err);
@@ -124,17 +183,117 @@ export default function KycDetails() {
 
   if (loading) return <h2 className="p-4">Loading KYC details...</h2>;
   if (error) return <h2 className="p-4">{error}</h2>;
-  if (!record) return <h2 className="p-4">No record found.</h2>;
+  if (!record || !editForm) return <h2 className="p-4">No record found.</h2>;
+
+  const requestRef = record.requestRef || record.kycId || "-";
+  const canRecover = Boolean(record.canEditAfterFailure || record.canRestartAutomation);
+  const hasReplacementFiles = Boolean(replacementFiles.pscFront || replacementFiles.pscBack);
+
+  const handleFieldChange = (event) => {
+    const { name, value, type, checked } = event.target;
+    setEditForm((prev) => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : value,
+    }));
+  };
+
+  const handleFileChange = (event) => {
+    const { name, files } = event.target;
+    setReplacementFiles((prev) => ({
+      ...prev,
+      [name]: files && files.length > 0 ? files[0] : null,
+    }));
+  };
+
+  const handleCancelEdit = () => {
+    setEditForm(buildEditState(record));
+    setReplacementFiles({ pscFront: null, pscBack: null });
+    setEditMode(false);
+    setActionMessage("");
+  };
+
+  const handleSaveCorrections = async () => {
+    try {
+      setIsSaving(true);
+      setActionMessage("");
+
+      const formData = new FormData();
+      formData.append("FirstName", editForm.firstName);
+      formData.append("MiddleName", editForm.middleName);
+      formData.append("LastName", editForm.lastName);
+      formData.append("DateOfBirth", editForm.dateOfBirth);
+      formData.append("PpsNumber", editForm.ppsNumber);
+      formData.append("EmailAddress", editForm.emailAddress);
+      formData.append("PhoneNumber", editForm.phoneNumber);
+      formData.append("Address", editForm.address);
+      formData.append("County", editForm.county);
+      formData.append("City", editForm.city);
+      formData.append("Eircode", editForm.eircode);
+      formData.append("RiskRating", editForm.riskRating);
+      formData.append("IsPEP", String(editForm.isPEP));
+
+      if (replacementFiles.pscFront) {
+        formData.append("PscFront", replacementFiles.pscFront);
+      }
+
+      if (replacementFiles.pscBack) {
+        formData.append("PscBack", replacementFiles.pscBack);
+      }
+
+      const response = await updateFailedKycRecord(id, formData);
+      setActionVariant("success");
+      setActionMessage(response.data.message || "Failed record updated successfully.");
+      setEditMode(false);
+      await loadRecord();
+    } catch (err) {
+      console.error(err);
+      setActionVariant("danger");
+      setActionMessage(err?.response?.data || "Failed to save corrections.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRestart = async () => {
+    try {
+      setIsRestarting(true);
+      setActionMessage("");
+      const response = await restartFailedKycAutomation(id);
+      setActionVariant("success");
+      setActionMessage(
+        response.data.message ||
+          "Automation restarted successfully. Refresh after a short wait to see the latest status."
+      );
+      await loadRecord();
+    } catch (err) {
+      console.error(err);
+      setActionVariant("danger");
+      setActionMessage(err?.response?.data?.message || "Failed to restart automation.");
+      await loadRecord();
+    } finally {
+      setIsRestarting(false);
+    }
+  };
 
   return (
     <Container fluid className="p-4">
       <div className="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
         <div>
           <h2 className="mb-1">KYC Details</h2>
-          <div className="text-muted">Request Number: {record.kycId}</div>
+          <div className="text-muted">Request Number: {requestRef}</div>
         </div>
 
-        <div className="d-flex gap-2">
+        <div className="d-flex gap-2 flex-wrap">
+          {canRecover && !editMode && (
+            <Button variant="outline-primary" onClick={() => setEditMode(true)}>
+              Edit Failed Record
+            </Button>
+          )}
+          {canRecover && !editMode && (
+            <Button variant="warning" onClick={handleRestart} disabled={isRestarting}>
+              {isRestarting ? "Restarting..." : "Restart Processing"}
+            </Button>
+          )}
           <Button variant="secondary" onClick={() => navigate("/kyc-records")}>
             Back to KYC Records
           </Button>
@@ -144,28 +303,88 @@ export default function KycDetails() {
         </div>
       </div>
 
+      {actionMessage && (
+        <Alert variant={actionVariant} className="mb-4">
+          {actionMessage}
+        </Alert>
+      )}
+
+      {canRecover && (
+        <Alert variant="warning" className="mb-4">
+          This record is in a permanent failed state. Correct the record details or replace the PSC
+          documents, save the changes, and then use <strong>Restart Processing</strong> to rerun
+          automation from the beginning.
+        </Alert>
+      )}
+
       <Card className="mb-4 shadow-sm">
         <Card.Body>
           <Card.Title className="mb-3">Customer Details</Card.Title>
 
           <Row>
             <Col md={4}>
-              <ReadOnlyField label="First Name" value={record.firstName} />
+              {editMode ? (
+                <EditableField
+                  label="First Name"
+                  name="firstName"
+                  value={editForm.firstName}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="First Name" value={record.firstName} />
+              )}
             </Col>
             <Col md={4}>
-              <ReadOnlyField label="Middle Name" value={record.middleName} />
+              {editMode ? (
+                <EditableField
+                  label="Middle Name"
+                  name="middleName"
+                  value={editForm.middleName}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Middle Name" value={record.middleName} />
+              )}
             </Col>
             <Col md={4}>
-              <ReadOnlyField label="Last Name" value={record.lastName} />
+              {editMode ? (
+                <EditableField
+                  label="Last Name"
+                  name="lastName"
+                  value={editForm.lastName}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Last Name" value={record.lastName} />
+              )}
             </Col>
           </Row>
 
           <Row>
             <Col md={4}>
-              <ReadOnlyField label="Date of Birth" value={record.dateOfBirth} />
+              {editMode ? (
+                <EditableField
+                  label="Date of Birth"
+                  name="dateOfBirth"
+                  type="date"
+                  value={editForm.dateOfBirth}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Date of Birth" value={record.dateOfBirth} />
+              )}
             </Col>
             <Col md={4}>
-              <ReadOnlyField label="PPS Number" value={record.ppsNumber} />
+              {editMode ? (
+                <EditableField
+                  label="PPS Number"
+                  name="ppsNumber"
+                  value={editForm.ppsNumber}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="PPS Number" value={record.ppsNumber} />
+              )}
             </Col>
             <Col md={4}>
               <Form.Group className="mb-3">
@@ -177,28 +396,165 @@ export default function KycDetails() {
 
           <Row>
             <Col md={6}>
-              <ReadOnlyField label="Email Address" value={record.emailAddress} />
+              {editMode ? (
+                <EditableField
+                  label="Email Address"
+                  name="emailAddress"
+                  type="email"
+                  value={editForm.emailAddress}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Email Address" value={record.emailAddress} />
+              )}
             </Col>
             <Col md={6}>
-              <ReadOnlyField label="Phone Number" value={record.phoneNumber} />
+              {editMode ? (
+                <EditableField
+                  label="Phone Number"
+                  name="phoneNumber"
+                  value={editForm.phoneNumber}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Phone Number" value={record.phoneNumber} />
+              )}
             </Col>
           </Row>
 
           <Row>
             <Col md={12}>
-              <ReadOnlyField label="Address" value={record.address} />
+              {editMode ? (
+                <EditableField
+                  label="Address"
+                  name="address"
+                  value={editForm.address}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Address" value={record.address} />
+              )}
             </Col>
           </Row>
 
           <Row>
             <Col md={4}>
-              <ReadOnlyField label="County" value={record.county} />
+              {editMode ? (
+                <EditableField
+                  label="County"
+                  name="county"
+                  value={editForm.county}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="County" value={record.county} />
+              )}
             </Col>
             <Col md={4}>
-              <ReadOnlyField label="City" value={record.city} />
+              {editMode ? (
+                <EditableField
+                  label="City"
+                  name="city"
+                  value={editForm.city}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="City" value={record.city} />
+              )}
             </Col>
             <Col md={4}>
-              <ReadOnlyField label="Eircode" value={record.eircode} />
+              {editMode ? (
+                <EditableField
+                  label="Eircode"
+                  name="eircode"
+                  value={editForm.eircode}
+                  onChange={handleFieldChange}
+                />
+              ) : (
+                <ReadOnlyField label="Eircode" value={record.eircode} />
+              )}
+            </Col>
+          </Row>
+
+          <Row>
+            <Col md={4}>
+              {editMode ? (
+                <Form.Group className="mb-3">
+                  <Form.Label>Risk Rating</Form.Label>
+                  <Form.Select name="riskRating" value={editForm.riskRating} onChange={handleFieldChange}>
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                  </Form.Select>
+                </Form.Group>
+              ) : (
+                <ReadOnlyField label="Risk Rating" value={record.riskRating} />
+              )}
+            </Col>
+            <Col md={4}>
+              {editMode ? (
+                <Form.Group className="mb-3">
+                  <Form.Label>PEP</Form.Label>
+                  <div className="pt-2">
+                    <Form.Check
+                      type="checkbox"
+                      name="isPEP"
+                      label="Is Politically Exposed Person"
+                      checked={editForm.isPEP}
+                      onChange={handleFieldChange}
+                    />
+                  </div>
+                </Form.Group>
+              ) : (
+                <ReadOnlyField label="PEP" value={record.isPEP ? "Yes" : "No"} />
+              )}
+            </Col>
+          </Row>
+
+          {editMode && (
+            <div className="d-flex gap-2 flex-wrap">
+              <Button onClick={handleSaveCorrections} disabled={isSaving}>
+                {isSaving ? "Saving..." : "Save Corrections"}
+              </Button>
+              <Button variant="outline-secondary" onClick={handleCancelEdit} disabled={isSaving}>
+                Cancel
+              </Button>
+            </div>
+          )}
+        </Card.Body>
+      </Card>
+
+      <Card className="mb-4 shadow-sm">
+        <Card.Body>
+          <Card.Title className="mb-3">Automation Status</Card.Title>
+
+          <Row>
+            <Col md={4}>
+              <Form.Group className="mb-3">
+                <Form.Label>Automation</Form.Label>
+                <div>{getAutomationBadge(record.automationStatus)}</div>
+              </Form.Group>
+            </Col>
+            <Col md={4}>
+              <ReadOnlyField
+                label="Retry Attempts"
+                value={`${record.retryAttemptCount}/${record.maxRetryAttempts}`}
+              />
+            </Col>
+            <Col md={4}>
+              <ReadOnlyField
+                label="Next Retry"
+                value={formatDateTime(record.nextRetryAtUtc)}
+              />
+            </Col>
+          </Row>
+
+          <Row>
+            <Col md={6}>
+              <ReadOnlyField label="Last Failed Step" value={record.lastFailedStep} />
+            </Col>
+            <Col md={6}>
+              <ReadOnlyField label="Last Automation Error" value={record.lastAutomationError} />
             </Col>
           </Row>
         </Card.Body>
@@ -277,6 +633,17 @@ export default function KycDetails() {
                 )}
               </div>
               <div>{record.pscFrontFileName}</div>
+              {editMode && (
+                <Form.Group className="mt-3">
+                  <Form.Label>Replace PSC Front</Form.Label>
+                  <Form.Control type="file" name="pscFront" onChange={handleFileChange} />
+                  {replacementFiles.pscFront && (
+                    <div className="text-muted small mt-2">
+                      Selected: {replacementFiles.pscFront.name}
+                    </div>
+                  )}
+                </Form.Group>
+              )}
             </Card.Body>
           </Card>
         </Col>
@@ -313,10 +680,27 @@ export default function KycDetails() {
                 )}
               </div>
               <div>{record.pscBackFileName}</div>
+              {editMode && (
+                <Form.Group className="mt-3">
+                  <Form.Label>Replace PSC Back</Form.Label>
+                  <Form.Control type="file" name="pscBack" onChange={handleFileChange} />
+                  {replacementFiles.pscBack && (
+                    <div className="text-muted small mt-2">
+                      Selected: {replacementFiles.pscBack.name}
+                    </div>
+                  )}
+                </Form.Group>
+              )}
             </Card.Body>
           </Card>
         </Col>
       </Row>
+
+      {editMode && hasReplacementFiles && (
+        <Alert variant="info" className="mb-4">
+          Replacement PSC files have been selected. Save corrections first, then restart processing.
+        </Alert>
+      )}
 
       <FileSection
         title="Search Response"

@@ -94,6 +94,61 @@ function getBatchStatusBadge(status) {
   }
 }
 
+function getAutomationBadge(status) {
+  switch ((status || "").toLowerCase()) {
+    case "completed":
+      return <Badge bg="success">Completed</Badge>;
+    case "queued":
+      return <Badge bg="secondary">Queued</Badge>;
+    case "running":
+      return <Badge bg="primary">Running</Badge>;
+    case "waiting retry":
+      return (
+        <Badge bg="warning" text="dark">
+          Waiting Retry
+        </Badge>
+      );
+    case "terminal failed":
+      return <Badge bg="danger">Terminal Failed</Badge>;
+    default:
+      return <Badge bg="secondary">{status || "Unknown"}</Badge>;
+  }
+}
+
+function getBulkRowStatusBadge(status) {
+  switch ((status || "").toLowerCase()) {
+    case "completed":
+      return <Badge bg="success">Completed</Badge>;
+    case "imported":
+      return <Badge bg="info">Imported</Badge>;
+    case "processing":
+      return <Badge bg="primary">Processing</Badge>;
+    case "waiting retry":
+      return (
+        <Badge bg="warning" text="dark">
+          Waiting Retry
+        </Badge>
+      );
+    case "pending":
+      return (
+        <Badge bg="warning" text="dark">
+          Pending
+        </Badge>
+      );
+    case "failed":
+      return <Badge bg="danger">Failed</Badge>;
+    default:
+      return <Badge bg="secondary">{status || "Unknown"}</Badge>;
+  }
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return value;
+  return dt.toLocaleString();
+}
+
 export default function KycRecords() {
   const [records, setRecords] = useState([]);
   const [error, setError] = useState("");
@@ -146,20 +201,37 @@ export default function KycRecords() {
 
   const filteredRecords = useMemo(() => {
     const search = searchText.trim().toLowerCase();
-    if (!search) return records;
+    const matchingRecords = !search
+      ? records
+      : records.filter((record) => {
+          return (
+            record.kycId?.toLowerCase().includes(search) ||
+            record.customerName?.toLowerCase().includes(search) ||
+            record.ppsNumber?.toLowerCase().includes(search) ||
+            record.county?.toLowerCase().includes(search) ||
+            record.status?.toLowerCase().includes(search) ||
+            record.automationStatus?.toLowerCase().includes(search) ||
+            record.lastFailedStep?.toLowerCase().includes(search)
+          );
+        });
 
-    return records.filter((record) => {
-      return (
-        record.kycId?.toLowerCase().includes(search) ||
-        record.customerName?.toLowerCase().includes(search) ||
-        record.ppsNumber?.toLowerCase().includes(search) ||
-        record.county?.toLowerCase().includes(search) ||
-        record.status?.toLowerCase().includes(search)
-      );
+    return [...matchingRecords].sort((left, right) => {
+      const leftDate = new Date(left.createdDate || 0).getTime();
+      const rightDate = new Date(right.createdDate || 0).getTime();
+
+      if (rightDate !== leftDate) {
+        return rightDate - leftDate;
+      }
+
+      return (right.kycId || "").localeCompare(left.kycId || "");
     });
   }, [records, searchText]);
 
-  const countyOptions = ["Cork", "Dublin", "Westmeath"];
+  const countyOptions = useMemo(() => {
+    return [...new Set(records.map((record) => record.county).filter(Boolean))].sort(
+      (left, right) => left.localeCompare(right)
+    );
+  }, [records]);
 
   const getFilterText = () => {
     const activeFilters = [];
@@ -435,6 +507,8 @@ export default function KycRecords() {
                 <th>PPS Number</th>
                 <th>County</th>
                 <th>Status</th>
+                <th>Automation</th>
+                <th>Retries</th>
                 <th>Created Date</th>
               </tr>
             </thead>
@@ -450,13 +524,15 @@ export default function KycRecords() {
                   <td>{record.ppsNumber}</td>
                   <td>{record.county}</td>
                   <td>{getStatusBadge(record.status)}</td>
+                  <td>{getAutomationBadge(record.automationStatus)}</td>
+                  <td>{record.retryAttemptCount}/{record.maxRetryAttempts}</td>
                   <td>{new Date(record.createdDate).toLocaleDateString()}</td>
                 </tr>
               ))}
 
               {filteredRecords.length === 0 && (
                 <tr>
-                  <td colSpan="6" style={{ textAlign: "center" }}>
+                  <td colSpan="8" style={{ textAlign: "center" }}>
                     No records found
                   </td>
                 </tr>
@@ -653,6 +729,9 @@ export default function KycRecords() {
                       <th>Row No</th>
                       <th>RowRef</th>
                       <th>Status</th>
+                      <th>Automation</th>
+                      <th>Retries</th>
+                      <th>Next Retry</th>
                       <th>RequestRef</th>
                       <th>KycUploadId</th>
                       <th>Error</th>
@@ -663,35 +742,19 @@ export default function KycRecords() {
                       <tr key={row.bulkUploadRowResultId}>
                         <td>{row.rowNumber}</td>
                         <td>{row.rowRef}</td>
-                        <td>
-                          <Badge
-                            bg={
-                              row.status === 1 || row.status === "Success"
-                                ? "success"
-                                : row.status === 2 || row.status === "Failed"
-                                ? "danger"
-                                : "warning"
-                            }
-                            text={row.status === 0 || row.status === "Pending" ? "dark" : undefined}
-                          >
-                            {typeof row.status === "number"
-                              ? row.status === 0
-                                ? "Pending"
-                                : row.status === 1
-                                ? "Success"
-                                : "Failed"
-                              : row.status}
-                          </Badge>
-                        </td>
+                        <td>{getBulkRowStatusBadge(row.status)}</td>
+                        <td>{getAutomationBadge(row.automationStatus)}</td>
+                        <td>{row.maxRetryAttempts ? `${row.retryAttemptCount}/${row.maxRetryAttempts}` : "-"}</td>
+                        <td>{formatDateTime(row.nextRetryAtUtc)}</td>
                         <td>{row.requestRef || "-"}</td>
                         <td style={{ wordBreak: "break-all" }}>{row.kycUploadId || "-"}</td>
-                        <td>{row.errorMessage || "-"}</td>
+                        <td>{row.lastAutomationError || row.errorMessage || row.lastFailedStep || "-"}</td>
                       </tr>
                     ))}
 
                     {selectedBatchRows.length === 0 && (
                       <tr>
-                        <td colSpan="6" className="text-center">
+                        <td colSpan="9" className="text-center">
                           No row results available
                         </td>
                       </tr>

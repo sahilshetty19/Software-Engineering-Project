@@ -125,13 +125,65 @@ namespace Bank_Web.Controllers.Api
                         x.row.RowRef,
                         x.row.KycUploadId,
                         RequestRef = kyc != null ? kyc.RequestRef : null,
-                        x.row.Status,
+                        Status = MapBulkRowStatus(x.row, kyc),
+                        ImportStatus = x.row.Status.ToString(),
                         x.row.ErrorMessage,
-                        x.row.CreatedAtUtc
+                        x.row.CreatedAtUtc,
+                        AutomationStatus = kyc != null ? MapAutomationStatus(kyc.AutomationStatus) : null,
+                        RetryAttemptCount = kyc != null ? kyc.RetryAttemptCount : 0,
+                        MaxRetryAttempts = kyc != null ? kyc.MaxRetryAttempts : 0,
+                        NextRetryAtUtc = kyc != null ? kyc.NextRetryAtUtc : null,
+                        LastAutomationError = kyc != null ? kyc.LastAutomationError : null,
+                        LastFailedStep = kyc != null ? kyc.LastFailedStep : null
                     })
                 .ToListAsync();
 
             return Ok(rows);
+        }
+
+        private static string MapAutomationStatus(AutomationRunStatus status)
+        {
+            return status switch
+            {
+                AutomationRunStatus.Queued => "Queued",
+                AutomationRunStatus.Running => "Running",
+                AutomationRunStatus.WaitingRetry => "Waiting Retry",
+                AutomationRunStatus.Completed => "Completed",
+                AutomationRunStatus.TerminalFailed => "Terminal Failed",
+                _ => status.ToString()
+            };
+        }
+
+        private static string MapBulkRowStatus(BulkUploadRowResult row, KycUploadDetails? kyc)
+        {
+            if (kyc != null)
+            {
+                if (kyc.AutomationStatus == AutomationRunStatus.TerminalFailed || kyc.Status == KycWorkflowStatus.Failed)
+                    return "Failed";
+
+                if (kyc.AutomationStatus == AutomationRunStatus.Completed ||
+                    kyc.Status == KycWorkflowStatus.Completed ||
+                    kyc.Status == KycWorkflowStatus.KycDone)
+                    return "Completed";
+
+                if (kyc.AutomationStatus == AutomationRunStatus.Running)
+                    return "Processing";
+
+                if (kyc.AutomationStatus == AutomationRunStatus.WaitingRetry)
+                    return "Waiting Retry";
+
+                if (kyc.AutomationStatus == AutomationRunStatus.Queued)
+                    return "Pending";
+
+                return "Processing";
+            }
+
+            return row.Status switch
+            {
+                BulkUploadRowStatus.Success => "Imported",
+                BulkUploadRowStatus.Failed => "Failed",
+                _ => "Pending"
+            };
         }
         [HttpGet("template")]
         public IActionResult DownloadTemplate()

@@ -26,16 +26,93 @@ ChartJS.register(
   BarElement
 );
 
-function SummaryCard({ title, count, onClick }) {
+const summaryCardThemes = [
+  {
+    key: "total",
+    title: "Total Records",
+    color: "#0f4c81",
+    tint: "linear-gradient(135deg, #e8f3ff 0%, #d8ebff 100%)",
+    shadow: "0 18px 34px rgba(15, 76, 129, 0.14)",
+  },
+  {
+    key: "pending",
+    title: "Pending",
+    color: "#b26a00",
+    tint: "linear-gradient(135deg, #fff5dd 0%, #ffe8b2 100%)",
+    shadow: "0 18px 34px rgba(178, 106, 0, 0.16)",
+  },
+  {
+    key: "processing",
+    title: "Processing",
+    color: "#005f73",
+    tint: "linear-gradient(135deg, #ddf7fb 0%, #c5ecf5 100%)",
+    shadow: "0 18px 34px rgba(0, 95, 115, 0.16)",
+  },
+  {
+    key: "completed",
+    title: "Completed",
+    color: "#166534",
+    tint: "linear-gradient(135deg, #e4f8eb 0%, #c9efd7 100%)",
+    shadow: "0 18px 34px rgba(22, 101, 52, 0.16)",
+  },
+  {
+    key: "failed",
+    title: "Failed",
+    color: "#9f1239",
+    tint: "linear-gradient(135deg, #ffe3ea 0%, #ffcfdc 100%)",
+    shadow: "0 18px 34px rgba(159, 18, 57, 0.16)",
+  },
+];
+
+const chartPalette = {
+  status: ["#f59e0b", "#0ea5e9", "#22c55e", "#ef4444"],
+  county: ["#0f4c81", "#0ea5e9", "#14b8a6", "#22c55e", "#f59e0b", "#ef4444"],
+  transaction: ["#166534", "#b91c1c", "#b26a00"],
+};
+
+const sectionCardStyle = {
+  border: "1px solid rgba(15, 23, 42, 0.08)",
+  borderRadius: "20px",
+  boxShadow: "0 22px 42px rgba(15, 23, 42, 0.08)",
+};
+
+function SummaryCard({ title, count, color, tint, shadow, onClick }) {
   return (
     <Card
-      className="h-100 shadow-sm"
+      className="h-100 border-0"
       onClick={onClick}
-      style={{ cursor: "pointer" }}
+      style={{
+        cursor: "pointer",
+        background: tint,
+        borderRadius: "20px",
+        boxShadow: shadow,
+      }}
     >
       <Card.Body>
-        <Card.Title>{title}</Card.Title>
-        <h3 className="mb-0">{count}</h3>
+        <div
+          style={{
+            width: "56px",
+            height: "6px",
+            borderRadius: "999px",
+            backgroundColor: color,
+            marginBottom: "18px",
+          }}
+        />
+        <div
+          style={{
+            fontSize: "0.82rem",
+            fontWeight: 700,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            color,
+            marginBottom: "10px",
+          }}
+        >
+          {title}
+        </div>
+        <h3 className="mb-0" style={{ color: "#102a43", fontWeight: 700 }}>
+          {count}
+        </h3>
       </Card.Body>
     </Card>
   );
@@ -46,7 +123,11 @@ function getStatusBadge(status) {
     case "completed":
       return <Badge bg="success">Completed</Badge>;
     case "pending":
-      return <Badge bg="warning" text="dark">Pending</Badge>;
+      return (
+        <Badge bg="warning" text="dark">
+          Pending
+        </Badge>
+      );
     case "processing":
       return <Badge bg="primary">Processing</Badge>;
     case "failed":
@@ -73,11 +154,25 @@ export default function Dashboard() {
   if (error) return <h2 className="p-4">{error}</h2>;
   if (!data) return <h2 className="p-4">Loading dashboard...</h2>;
 
+  const summaryCards = summaryCardThemes.map((theme) => ({
+    ...theme,
+    count: data.summary[theme.key] ?? 0,
+    onClick:
+      theme.key === "total"
+        ? () => navigate("/kyc-records")
+        : () =>
+            navigate(`/kyc-records?status=${theme.title === "Failed" ? "Failed" : theme.title}`),
+  }));
+
   const statusChartData = {
     labels: data.statusDistribution.map((item) => item.label),
     datasets: [
       {
         data: data.statusDistribution.map((item) => item.count),
+        backgroundColor: chartPalette.status,
+        borderColor: "#ffffff",
+        borderWidth: 3,
+        hoverOffset: 10,
       },
     ],
   };
@@ -88,6 +183,14 @@ export default function Dashboard() {
       {
         label: "Uploads",
         data: data.uploadTrend.map((item) => item.count),
+        borderColor: "#0f4c81",
+        backgroundColor: "rgba(15, 76, 129, 0.16)",
+        pointBackgroundColor: "#0f4c81",
+        pointBorderColor: "#ffffff",
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        tension: 0.35,
+        fill: true,
       },
     ],
   };
@@ -96,8 +199,15 @@ export default function Dashboard() {
     labels: data.countyDistribution.map((item) => item.label),
     datasets: [
       {
-        label: "Records",
         data: data.countyDistribution.map((item) => item.count),
+        backgroundColor: data.countyDistribution.map(
+          (_, index) => chartPalette.county[index % chartPalette.county.length]
+        ),
+        borderRadius: 12,
+        borderSkipped: false,
+        maxBarThickness: 56,
+        hoverBorderColor: "#ffffff",
+        hoverBorderWidth: 2,
       },
     ],
   };
@@ -107,6 +217,10 @@ export default function Dashboard() {
     datasets: [
       {
         data: data.transactionStats.map((item) => item.count),
+        backgroundColor: chartPalette.transaction,
+        borderColor: "#ffffff",
+        borderWidth: 3,
+        hoverOffset: 10,
       },
     ],
   };
@@ -116,10 +230,23 @@ export default function Dashboard() {
   };
 
   return (
-    <Container fluid className="p-4">
-      <div className="d-flex justify-content-between align-items-center mb-4">
+    <Container
+      fluid
+      className="p-4"
+      style={{
+        minHeight: "100vh",
+        background:
+          "radial-gradient(circle at top left, rgba(224, 242, 254, 0.8), transparent 32%), radial-gradient(circle at top right, rgba(220, 252, 231, 0.72), transparent 28%), linear-gradient(180deg, #f8fbff 0%, #eef4f8 100%)",
+      }}
+    >
+      <div className="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
         <div>
-          <h2 className="mb-1">Dashboard</h2>
+          <h2 className="mb-1" style={{ color: "#102a43", fontWeight: 700 }}>
+            Dashboard
+          </h2>
+          <div style={{ color: "#486581" }}>
+            Live KYC pipeline overview with status, volume, county spread, and recent activity.
+          </div>
         </div>
         <div className="d-flex gap-2">
           <Button variant="outline-secondary" onClick={() => navigate("/kyc-records")}>
@@ -130,49 +257,24 @@ export default function Dashboard() {
       </div>
 
       <Row className="g-3 mb-4">
-        <Col md={2}>
-          <SummaryCard
-            title="Total Records"
-            count={data.summary.total}
-            onClick={() => navigate("/kyc-records")}
-          />
-        </Col>
-        <Col md={2}>
-          <SummaryCard
-            title="Pending"
-            count={data.summary.pending}
-            onClick={() => navigate("/kyc-records?status=Pending")}
-          />
-        </Col>
-        <Col md={2}>
-          <SummaryCard
-            title="Processing"
-            count={data.summary.processing}
-            onClick={() => navigate("/kyc-records?status=Processing")}
-          />
-        </Col>
-        <Col md={2}>
-          <SummaryCard
-            title="Completed"
-            count={data.summary.completed}
-            onClick={() => navigate("/kyc-records?status=Completed")}
-          />
-        </Col>
-        <Col md={2}>
-          <SummaryCard
-            title="Failed"
-            count={data.summary.failed}
-            onClick={() => navigate("/kyc-records?status=Failed")}
-          />
-        </Col>
+        {summaryCards.map((card) => (
+          <Col md={6} xl={2} key={card.key}>
+            <SummaryCard {...card} />
+          </Col>
+        ))}
       </Row>
 
       <Row className="g-4 mb-4">
         <Col md={6}>
-          <Card className="shadow-sm">
+          <Card className="border-0 h-100" style={sectionCardStyle}>
             <Card.Body>
-              <Card.Title>KYC Status Distribution</Card.Title>
-              <div style={{ maxWidth: "400px" }}>
+              <Card.Title style={{ color: "#102a43", fontWeight: 700 }}>
+                KYC Status Distribution
+              </Card.Title>
+              <div style={{ color: "#486581", marginBottom: "16px" }}>
+                Clear view of where current records sit in the workflow.
+              </div>
+              <div style={{ maxWidth: "420px" }}>
                 <Doughnut
                   data={statusChartData}
                   options={{
@@ -195,9 +297,14 @@ export default function Dashboard() {
         </Col>
 
         <Col md={6}>
-          <Card className="shadow-sm">
+          <Card className="border-0 h-100" style={sectionCardStyle}>
             <Card.Body>
-              <Card.Title>KYC Upload Trend</Card.Title>
+              <Card.Title style={{ color: "#102a43", fontWeight: 700 }}>
+                KYC Upload Trend
+              </Card.Title>
+              <div style={{ color: "#486581", marginBottom: "16px" }}>
+                Upload momentum over time with emphasis on recent activity.
+              </div>
               <Line
                 data={uploadTrendData}
                 options={{
@@ -212,6 +319,14 @@ export default function Dashboard() {
                       position: "top",
                     },
                   },
+                  scales: {
+                    y: {
+                      beginAtZero: true,
+                      ticks: {
+                        precision: 0,
+                      },
+                    },
+                  },
                 }}
               />
             </Card.Body>
@@ -219,9 +334,14 @@ export default function Dashboard() {
         </Col>
 
         <Col md={6}>
-          <Card className="shadow-sm">
+          <Card className="border-0 h-100" style={sectionCardStyle}>
             <Card.Body>
-              <Card.Title>County-wise KYC Distribution</Card.Title>
+              <Card.Title style={{ color: "#102a43", fontWeight: 700 }}>
+                County-wise KYC Distribution
+              </Card.Title>
+              <div style={{ color: "#486581", marginBottom: "16px" }}>
+                Regional mix of KYC intake across supported counties.
+              </div>
               <Bar
                 data={countyChartData}
                 options={{
@@ -233,7 +353,42 @@ export default function Dashboard() {
                   },
                   plugins: {
                     legend: {
-                      position: "top",
+                      display: false,
+                    },
+                    tooltip: {
+                      backgroundColor: "#102a43",
+                      titleColor: "#f8fafc",
+                      bodyColor: "#f8fafc",
+                      padding: 12,
+                      displayColors: false,
+                      callbacks: {
+                        title: (items) => items[0]?.label ?? "County",
+                        label: (context) => `Records: ${context.parsed.y}`,
+                      },
+                    },
+                  },
+                  scales: {
+                    x: {
+                      grid: {
+                        display: false,
+                      },
+                      ticks: {
+                        color: "#486581",
+                        font: {
+                          weight: 600,
+                        },
+                      },
+                    },
+                    y: {
+                      beginAtZero: true,
+                      grace: "8%",
+                      grid: {
+                        color: "rgba(72, 101, 129, 0.12)",
+                      },
+                      ticks: {
+                        precision: 0,
+                        color: "#486581",
+                      },
                     },
                   },
                 }}
@@ -243,10 +398,15 @@ export default function Dashboard() {
         </Col>
 
         <Col md={6}>
-          <Card className="shadow-sm">
+          <Card className="border-0 h-100" style={sectionCardStyle}>
             <Card.Body>
-              <Card.Title>CKYC Transaction Status</Card.Title>
-              <div style={{ maxWidth: "400px" }}>
+              <Card.Title style={{ color: "#102a43", fontWeight: 700 }}>
+                CKYC Transaction Status
+              </Card.Title>
+              <div style={{ color: "#486581", marginBottom: "16px" }}>
+                Operational mix of successful, failed, and pending CKYC interactions.
+              </div>
+              <div style={{ maxWidth: "420px" }}>
                 <Doughnut
                   data={transactionChartData}
                   options={{
@@ -272,9 +432,14 @@ export default function Dashboard() {
 
       <Row className="g-4">
         <Col md={8}>
-          <Card className="shadow-sm">
+          <Card className="border-0" style={sectionCardStyle}>
             <Card.Body>
-              <Card.Title>Recent KYC Uploads</Card.Title>
+              <Card.Title style={{ color: "#102a43", fontWeight: 700 }}>
+                Recent KYC Uploads
+              </Card.Title>
+              <div style={{ color: "#486581", marginBottom: "12px" }}>
+                Most recently created KYC records for quick inspection.
+              </div>
               <Table hover responsive>
                 <thead>
                   <tr>
@@ -293,7 +458,7 @@ export default function Dashboard() {
                       onClick={() => navigate(`/kyc/${record.id}`)}
                       style={{ cursor: "pointer" }}
                     >
-                      <td>{record.kycId}</td>
+                      <td>{record.requestRef || record.kycId}</td>
                       <td>{record.customerName}</td>
                       <td>{record.ppsNumber}</td>
                       <td>{record.county}</td>
@@ -308,16 +473,44 @@ export default function Dashboard() {
         </Col>
 
         <Col md={4}>
-          <Card className="shadow-sm">
+          <Card
+            className="border-0 h-100"
+            style={{
+              ...sectionCardStyle,
+              background: "linear-gradient(180deg, #fff6e5 0%, #fffdf7 100%)",
+            }}
+          >
             <Card.Body>
-              <Card.Title>Alerts</Card.Title>
+              <Card.Title style={{ color: "#8d4f00", fontWeight: 700 }}>
+                Alerts
+              </Card.Title>
+              <div style={{ color: "#8d4f00", marginBottom: "12px" }}>
+                Items that may need operational follow-up.
+              </div>
               <ListGroup variant="flush">
                 {data.alerts && data.alerts.length > 0 ? (
                   data.alerts.map((alert, index) => (
-                    <ListGroup.Item key={index}>{alert}</ListGroup.Item>
+                    <ListGroup.Item
+                      key={index}
+                      style={{
+                        background: "transparent",
+                        borderColor: "rgba(141, 79, 0, 0.16)",
+                        color: "#7c4a03",
+                      }}
+                    >
+                      {alert}
+                    </ListGroup.Item>
                   ))
                 ) : (
-                  <ListGroup.Item>No alerts available</ListGroup.Item>
+                  <ListGroup.Item
+                    style={{
+                      background: "transparent",
+                      borderColor: "rgba(141, 79, 0, 0.16)",
+                      color: "#7c4a03",
+                    }}
+                  >
+                    No alerts available
+                  </ListGroup.Item>
                 )}
               </ListGroup>
             </Card.Body>

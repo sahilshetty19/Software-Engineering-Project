@@ -1,16 +1,28 @@
 ﻿using Bank.Web.Data;
 using Bank.Web.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
 namespace Bank.Web.Services.Automation;
 
+public enum KycAutomationOutcome
+{
+    Completed = 0,
+    WaitingRetry = 1,
+    TerminalFailure = 2
+}
+
 public sealed class KycAutomationResult
 {
     public bool Success { get; set; }
     public bool IsComplete { get; set; }
+    public bool WillRetry { get; set; }
+    public KycAutomationOutcome Outcome { get; set; } = KycAutomationOutcome.Completed;
+    public string? FailedStep { get; set; }
+    public DateTimeOffset? NextRetryAtUtc { get; set; }
     public string Message { get; set; } = "";
 }
 
@@ -22,6 +34,7 @@ public sealed class KycAutomationService
     private readonly PscOcrService _pscOcr;
     private readonly CkycStatusClient _ckycStatus;
     private readonly SftpZipUploader _sftp;
+    private readonly AutomationRetryOptions _retryOptions;
 
     public KycAutomationService(
         BankDbContext context,
@@ -29,7 +42,8 @@ public sealed class KycAutomationService
         AesGcmCryptoService aes,
         PscOcrService pscOcr,
         CkycStatusClient ckycStatus,
-        SftpZipUploader sftp)
+        SftpZipUploader sftp,
+        IOptions<AutomationRetryOptions> retryOptions)
     {
         _context = context;
         _ckyc = ckyc;
@@ -37,14 +51,15 @@ public sealed class KycAutomationService
         _pscOcr = pscOcr;
         _ckycStatus = ckycStatus;
         _sftp = sftp;
+        _retryOptions = retryOptions.Value;
     }
 
-    public async Task<KycAutomationResult> ProcessRecordAsync(Guid kycUploadId)
+    public async Task<KycAutomationResult> ProcessRecordAsync(Guid kycUploadId, CancellationToken ct = default)
     {
         var upload = await _context.KycUploadDetails
             .Include(x => x.Images)
             .AsSplitQuery()
-            .FirstOrDefaultAsync(x => x.KycUploadId == kycUploadId);
+            .FirstOrDefaultAsync(x => x.KycUploadId == kycUploadId, ct);
 
         if (upload == null)
         {
@@ -52,96 +67,114 @@ public sealed class KycAutomationService
             {
                 Success = false,
                 IsComplete = false,
+                Outcome = KycAutomationOutcome.TerminalFailure,
+                FailedStep = "Load Record",
                 Message = "KYC record not found."
             };
         }
 
         if (upload.Status == KycWorkflowStatus.KycDone)
+            return await CompleteAttemptAsync(upload, "Record already completed.");
+
+        if (upload.MaxRetryAttempts <= 0)
+            upload.MaxRetryAttempts = Math.Max(1, _retryOptions.DefaultMaxRetryAttempts);
+
+        upload.AutomationStatus = AutomationRunStatus.Running;
+        upload.RetryAttemptCount += 1;
+        upload.LastAutomationStartedAtUtc = DateTimeOffset.UtcNow;
+        upload.AutomationLockedUntilUtc = DateTimeOffset.UtcNow.AddMinutes(5);
+        await _context.SaveChangesAsync(ct);
+
+        try
         {
-            return new KycAutomationResult
+            if (!await EnsurePscFrontValidated(upload))
+                return await TerminalFailureAsync(upload, "Validate PSC Front", upload.FailureReason ?? "PSC Front validation failed.");
+
+            if (!await EnsurePscBackValidated(upload))
+                return await TerminalFailureAsync(upload, "Validate PSC Back", upload.FailureReason ?? "PSC Back validation failed.");
+
+            if (!await EnsureDedupeChecked(upload))
+                return await TerminalFailureAsync(upload, "Check Dedupe", upload.FailureReason ?? "Dedupe check failed.");
+
+            if (upload.DedupePassed == true)
+                return await CompleteAttemptAsync(upload, "Dedupe PASS. Customer already exists in bank records.");
+
+            try
             {
-                Success = true,
-                IsComplete = true,
-                Message = "Record already completed."
-            };
-        }
-
-        if (!await EnsurePscFrontValidated(upload))
-            return Fail("PSC Front validation failed.");
-
-        if (!await EnsurePscBackValidated(upload))
-            return Fail("PSC Back validation failed.");
-
-        if (!await EnsureDedupeChecked(upload))
-            return Fail("Dedupe check failed.");
-
-        if (upload.DedupePassed == true)
-        {
-            return new KycAutomationResult
+                if (!await EnsureSearchExecuted(upload))
+                    return await RetryLaterAsync(upload, "Search CKYC", upload.FailureReason ?? "CKYC search failed.");
+            }
+            catch (Exception ex)
             {
-                Success = true,
-                IsComplete = true,
-                Message = "Dedupe PASS. Customer already exists in bank records."
-            };
-        }
+                return await RetryLaterAsync(upload, "Search CKYC", ex.Message);
+            }
 
-        if (!await EnsureSearchExecuted(upload))
-            return Fail("CKYC search failed.");
-
-        if (upload.SearchFound == true)
-        {
-            if (!await EnsureDownloadCompleted(upload))
-                return Fail("CKYC download failed.");
-
-            if (!await EnsurePushedToInternal(upload))
-                return Fail("Push to internal failed.");
-
-            return new KycAutomationResult
+            if (upload.SearchFound == true)
             {
-                Success = true,
-                IsComplete = true,
-                Message = "Found in CKYC, downloaded, and pushed to internal successfully."
-            };
-        }
+                try
+                {
+                    if (!await EnsureDownloadCompleted(upload))
+                        return await TerminalFailureAsync(upload, "Download CKYC", "CKYC download prerequisites are not satisfied.");
+                }
+                catch (Exception ex)
+                {
+                    return await RetryLaterAsync(upload, "Download CKYC", ex.Message);
+                }
 
-        if (!await EnsureZipGenerated(upload))
-            return Fail("ZIP generation failed.");
+                if (!await EnsurePushedToInternal(upload))
+                    return await TerminalFailureAsync(upload, "Push To Internal", "Push to internal failed.");
 
-        if (upload.Status != KycWorkflowStatus.Sent &&
-            upload.Status != KycWorkflowStatus.Completed &&
-            upload.Status != KycWorkflowStatus.KycDone)
-        {
-            if (!await EnsureZipSent(upload))
-                return Fail("SFTP upload failed.");
-        }
+                return await CompleteAttemptAsync(upload, "Found in CKYC, downloaded, and pushed to internal successfully.");
+            }
 
-        if (upload.Status == KycWorkflowStatus.Sent)
-        {
-            var statusResult = await CheckStatusOnce(upload);
-            if (!statusResult.Success)
-                return statusResult;
-        }
+            if (!await EnsureZipGenerated(upload))
+                return await TerminalFailureAsync(upload, "Generate ZIP", upload.FailureReason ?? "ZIP generation failed.");
 
-        if (upload.Status == KycWorkflowStatus.Completed &&
-            !string.IsNullOrWhiteSpace(upload.CkycNumber))
-        {
-            if (!await EnsurePushedToInternal(upload))
-                return Fail("Push to internal failed after CKYC completion.");
-
-            return new KycAutomationResult
+            if (upload.Status != KycWorkflowStatus.Sent &&
+                upload.Status != KycWorkflowStatus.Completed &&
+                upload.Status != KycWorkflowStatus.KycDone)
             {
-                Success = true,
-                IsComplete = true,
-                Message = "CKYC completed and pushed to internal successfully."
-            };
-        }
+                if (!await EnsureZipSent(upload))
+                    return await RetryLaterAsync(upload, "Send ZIP to SFTP", upload.FailureReason ?? "SFTP upload failed.");
+            }
 
-        return new KycAutomationResult
+            if (upload.Status == KycWorkflowStatus.Sent)
+            {
+                try
+                {
+                    var statusResult = await CheckStatusOnce(upload);
+                    if (!statusResult.Success)
+                    {
+                        return await TerminalFailureAsync(
+                            upload,
+                            statusResult.FailedStep ?? "Check CKYC Status",
+                            statusResult.Message);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return await RetryLaterAsync(upload, "Check CKYC Status", ex.Message);
+                }
+
+                if (upload.Status == KycWorkflowStatus.Sent)
+                    return await RetryLaterAsync(upload, "Check CKYC Status", "Record processed up to current automation step. Awaiting next retry/check.");
+            }
+
+            if (upload.Status == KycWorkflowStatus.Completed &&
+                !string.IsNullOrWhiteSpace(upload.CkycNumber))
+            {
+                if (!await EnsurePushedToInternal(upload))
+                    return await TerminalFailureAsync(upload, "Push To Internal", "Push to internal failed after CKYC completion.");
+
+                return await CompleteAttemptAsync(upload, "CKYC completed and pushed to internal successfully.");
+            }
+
+            return await RetryLaterAsync(upload, "Check CKYC Status", "Record processed up to current automation step. Awaiting next retry/check.");
+        }
+        catch (Exception ex)
         {
-            Success = true,
-            IsComplete = false,
-            Message = "Record processed up to current automation step. Awaiting next retry/check."
-        };
+            return await RetryLaterAsync(upload, "Automation", ex.Message);
+        }
     }
 
     private async Task<bool> EnsurePscFrontValidated(KycUploadDetails upload)
@@ -588,6 +621,8 @@ public sealed class KycAutomationService
             {
                 Success = true,
                 IsComplete = false,
+                Outcome = KycAutomationOutcome.WaitingRetry,
+                FailedStep = "Check CKYC Status",
                 Message = "CKYC status not found yet."
             };
         }
@@ -637,6 +672,7 @@ public sealed class KycAutomationService
             {
                 Success = true,
                 IsComplete = false,
+                Outcome = KycAutomationOutcome.Completed,
                 Message = "CKYC status success."
             };
         }
@@ -653,6 +689,8 @@ public sealed class KycAutomationService
             {
                 Success = false,
                 IsComplete = false,
+                Outcome = KycAutomationOutcome.TerminalFailure,
+                FailedStep = "Check CKYC Status",
                 Message = $"CKYC status failed: {upload.FailureReason}"
             };
         }
@@ -664,6 +702,8 @@ public sealed class KycAutomationService
         {
             Success = true,
             IsComplete = false,
+            Outcome = KycAutomationOutcome.WaitingRetry,
+            FailedStep = "Check CKYC Status",
             Message = $"CKYC status: {statusText}"
         };
     }
@@ -916,13 +956,93 @@ public sealed class KycAutomationService
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private static KycAutomationResult Fail(string message)
+    private async Task<KycAutomationResult> CompleteAttemptAsync(KycUploadDetails upload, string message)
     {
+        upload.AutomationStatus = AutomationRunStatus.Completed;
+        upload.NextRetryAtUtc = null;
+        upload.LastAutomationCompletedAtUtc = DateTimeOffset.UtcNow;
+        upload.AutomationLockedUntilUtc = null;
+        upload.LastFailedStep = null;
+        upload.LastAutomationError = null;
+        await _context.SaveChangesAsync();
+
+        return new KycAutomationResult
+        {
+            Success = true,
+            IsComplete = true,
+            Outcome = KycAutomationOutcome.Completed,
+            Message = message
+        };
+    }
+
+    private async Task<KycAutomationResult> TerminalFailureAsync(
+        KycUploadDetails upload,
+        string failedStep,
+        string message)
+    {
+        upload.AutomationStatus = AutomationRunStatus.TerminalFailed;
+        upload.NextRetryAtUtc = null;
+        upload.LastAutomationCompletedAtUtc = DateTimeOffset.UtcNow;
+        upload.AutomationLockedUntilUtc = null;
+        upload.LastFailedStep = failedStep;
+        upload.LastAutomationError = message;
+        upload.FailureReason = message;
+        await _context.SaveChangesAsync();
+
         return new KycAutomationResult
         {
             Success = false,
             IsComplete = false,
+            Outcome = KycAutomationOutcome.TerminalFailure,
+            FailedStep = failedStep,
             Message = message
         };
+    }
+
+    private async Task<KycAutomationResult> RetryLaterAsync(
+        KycUploadDetails upload,
+        string failedStep,
+        string message)
+    {
+        if (upload.RetryAttemptCount >= upload.MaxRetryAttempts)
+        {
+            return await TerminalFailureAsync(
+                upload,
+                failedStep,
+                $"Retry limit reached. {message}");
+        }
+
+        var delaySeconds = GetRetryDelaySeconds(upload.RetryAttemptCount);
+        var nextRetryAtUtc = DateTimeOffset.UtcNow.AddSeconds(delaySeconds);
+
+        upload.AutomationStatus = AutomationRunStatus.WaitingRetry;
+        upload.NextRetryAtUtc = nextRetryAtUtc;
+        upload.LastAutomationCompletedAtUtc = DateTimeOffset.UtcNow;
+        upload.AutomationLockedUntilUtc = null;
+        upload.LastFailedStep = failedStep;
+        upload.LastAutomationError = message;
+        upload.FailureReason = message;
+        await _context.SaveChangesAsync();
+
+        return new KycAutomationResult
+        {
+            Success = true,
+            IsComplete = false,
+            WillRetry = true,
+            Outcome = KycAutomationOutcome.WaitingRetry,
+            FailedStep = failedStep,
+            NextRetryAtUtc = nextRetryAtUtc,
+            Message = message
+        };
+    }
+
+    private int GetRetryDelaySeconds(int retryAttemptCount)
+    {
+        var configured = _retryOptions.RetryDelaySeconds;
+        if (configured == null || configured.Length == 0)
+            return 60;
+
+        var index = Math.Clamp(Math.Max(1, retryAttemptCount) - 1, 0, configured.Length - 1);
+        return Math.Max(5, configured[index]);
     }
 }

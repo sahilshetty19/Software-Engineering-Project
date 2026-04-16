@@ -1,5 +1,6 @@
 ﻿using Bank.Web.Data;
 using Bank.Web.Services;
+using Bank.Web.Services.Automation;
 using Bank.Web.Services.BulkUpload;
 using BCrypt.Net;
 using Microsoft.EntityFrameworkCore;
@@ -43,7 +44,10 @@ builder.Services.AddScoped<Bank.Web.Services.SftpZipUploader>();
 builder.Services.AddScoped<BulkUploadPackageReader>();
 builder.Services.AddScoped<BulkUploadRowValidator>();
 builder.Services.AddScoped<BulkUploadImportService>();
-builder.Services.AddScoped<Bank.Web.Services.Automation.KycAutomationService>();
+builder.Services.Configure<AutomationRetryOptions>(
+    builder.Configuration.GetSection("AutomationRetry"));
+builder.Services.AddScoped<KycAutomationService>();
+builder.Services.AddHostedService<KycAutomationRetryWorker>();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

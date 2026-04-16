@@ -7,6 +7,15 @@ public enum KycWorkflowStatus : short
     Draft = 0, OcrDone = 1, Validated = 2, Zipped = 3, Sent = 4, Completed = 5, Failed = 6, KycDone = 7
 }
 
+public enum AutomationRunStatus : short
+{
+    Queued = 0,
+    Running = 1,
+    WaitingRetry = 2,
+    Completed = 3,
+    TerminalFailed = 4
+}
+
 public enum OcrStatus : short { Pending = 0, Completed = 1, Failed = 2 }
 public enum ValidationStatus : short { Pass = 0, NeedsReview = 1, Fail = 2 }
 public enum DedupeStatus : short { NotChecked = 0, DuplicateFound = 1, Unique = 2 }

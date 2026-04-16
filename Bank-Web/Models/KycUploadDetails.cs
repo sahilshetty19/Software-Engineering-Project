@@ -23,6 +23,19 @@ public sealed class KycUploadDetails
 
     public string? FailureReason { get; set; }
 
+    public AutomationRunStatus AutomationStatus { get; set; } = AutomationRunStatus.Queued;
+    public int RetryAttemptCount { get; set; }
+    public int MaxRetryAttempts { get; set; } = 5;
+    public DateTimeOffset? NextRetryAtUtc { get; set; }
+    public DateTimeOffset? LastAutomationStartedAtUtc { get; set; }
+    public DateTimeOffset? LastAutomationCompletedAtUtc { get; set; }
+    public DateTimeOffset? AutomationLockedUntilUtc { get; set; }
+
+    [MaxLength(100)]
+    public string? LastFailedStep { get; set; }
+
+    public string? LastAutomationError { get; set; }
+
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? SubmittedAtUtc { get; set; }
     public DateTimeOffset? CompletedAtUtc { get; set; }

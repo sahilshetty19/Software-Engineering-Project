@@ -68,9 +68,32 @@ namespace Bank_Web.Controllers.Api
             public DateTimeOffset? CompletedAtUtc { get; set; }
         }
 
+        public class UpdateFailedKycRequest
+        {
+            public string? FirstName { get; set; }
+            public string? MiddleName { get; set; }
+            public string? LastName { get; set; }
+            public string? DateOfBirth { get; set; }
+            public string? PpsNumber { get; set; }
+            public string? EmailAddress { get; set; }
+            public string? PhoneNumber { get; set; }
+            public string? AddressLine1 { get; set; }
+            public string? Address { get; set; }
+            public string? CountyName { get; set; }
+            public string? County { get; set; }
+            public string? CityName { get; set; }
+            public string? City { get; set; }
+            public string? Eircode { get; set; }
+            public bool IsPEP { get; set; }
+            public string? RiskRating { get; set; }
+            public IFormFile? PscFront { get; set; }
+            public IFormFile? PscBack { get; set; }
+        }
+
         public class SavedKycRecord
         {
             public string Id { get; set; } = "";
+            public string RequestRef { get; set; } = "";
             public string KycId { get; set; } = "";
             public string CustomerName { get; set; } = "";
             public string PPSNumber { get; set; } = "";
@@ -87,6 +110,16 @@ namespace Bank_Web.Controllers.Api
             public string Address { get; set; } = "";
             public string City { get; set; } = "";
             public string Eircode { get; set; } = "";
+            public bool IsPEP { get; set; }
+            public string RiskRating { get; set; } = "";
+            public string AutomationStatus { get; set; } = "";
+            public int RetryAttemptCount { get; set; }
+            public int MaxRetryAttempts { get; set; }
+            public DateTimeOffset? NextRetryAtUtc { get; set; }
+            public string LastAutomationError { get; set; } = "";
+            public string LastFailedStep { get; set; } = "";
+            public bool CanEditAfterFailure { get; set; }
+            public bool CanRestartAutomation { get; set; }
 
             public string PscFrontFileName { get; set; } = "";
             public string PscBackFileName { get; set; } = "";
@@ -117,12 +150,183 @@ namespace Bank_Web.Controllers.Api
             };
         }
 
+        private static string MapAutomationStatus(AutomationRunStatus status)
+        {
+            return status switch
+            {
+                AutomationRunStatus.Queued => "Queued",
+                AutomationRunStatus.Running => "Running",
+                AutomationRunStatus.WaitingRetry => "Waiting Retry",
+                AutomationRunStatus.Completed => "Completed",
+                AutomationRunStatus.TerminalFailed => "Terminal Failed",
+                _ => status.ToString()
+            };
+        }
+
+        private static bool IsManuallyRecoverable(KycUploadDetails upload)
+        {
+            return upload.AutomationStatus == AutomationRunStatus.TerminalFailed;
+        }
+
+        private static void ResetImageValidation(KycUploadImage image)
+        {
+            image.OcrText = "";
+            image.OcrConfidence = 0;
+            image.ExtractedDocNumber = "";
+            image.ExtractedExpiryDate = null;
+            image.IsImageValidated = false;
+            image.ImageValidationMessage = null;
+            image.ImageValidatedAtUtc = null;
+        }
+
+        private static RiskRating ParseRiskRating(string? riskRating)
+        {
+            return Enum.TryParse<RiskRating>(riskRating, true, out var parsed)
+                ? parsed
+                : RiskRating.Low;
+        }
+
+        private async Task<(bool Ok, string Error, County? County, City? City)> ResolveLocationAsync(
+            string countyName,
+            string cityName,
+            CancellationToken ct)
+        {
+            var county = await _context.Counties
+                .FirstOrDefaultAsync(x => x.CountyName.ToLower() == countyName.ToLower(), ct);
+
+            if (county == null)
+                return (false, "Invalid County.", null, null);
+
+            var city = await _context.Cities
+                .FirstOrDefaultAsync(x => x.CityName.ToLower() == cityName.ToLower() && x.CountyId == county.CountyId, ct);
+
+            if (city == null)
+                return (false, "Invalid City.", county, null);
+
+            return (true, "", county, city);
+        }
+
+        private async Task<(bool Ok, string Error, byte[] Bytes, string ContentType, string OriginalFileName, long Size)> ReadAndValidateFileAsync(
+            IFormFile? file,
+            bool required)
+        {
+            var allowedContentTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "image/jpeg", "image/png", "application/pdf"
+            };
+
+            var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".jpg", ".jpeg", ".png", ".pdf"
+            };
+
+            const long maxFileBytes = 10 * 1024 * 1024;
+
+            if (file == null || file.Length == 0)
+            {
+                return required
+                    ? (false, "File is required.", Array.Empty<byte>(), "", "", 0)
+                    : (true, "", Array.Empty<byte>(), "", "", 0);
+            }
+
+            if (file.Length > maxFileBytes)
+                return (false, $"File '{file.FileName}' is too large (max 10MB).", Array.Empty<byte>(), "", "", 0);
+
+            var ext = Path.GetExtension(file.FileName);
+            if (string.IsNullOrWhiteSpace(ext) || !allowedExtensions.Contains(ext))
+                return (false, $"File '{file.FileName}' must be JPG, PNG, or PDF.", Array.Empty<byte>(), "", "", 0);
+
+            var contentType = file.ContentType ?? "";
+            if (!allowedContentTypes.Contains(contentType))
+                return (false, $"File '{file.FileName}' must be JPG, PNG, or PDF.", Array.Empty<byte>(), "", "", 0);
+
+            await using var ms = new MemoryStream();
+            await file.CopyToAsync(ms);
+            var bytes = ms.ToArray();
+
+            return (true, "", bytes, contentType, Path.GetFileName(file.FileName), file.Length);
+        }
+
+        private async Task AddManualRecoveryLogAsync(Guid kycUploadId, string stepName, string message, CancellationToken ct)
+        {
+            _context.KycWorkflowExecutionLogs.Add(new KycWorkflowExecutionLog
+            {
+                KycUploadId = kycUploadId,
+                StepName = stepName,
+                Status = KycWorkflowStepStatus.Success,
+                Message = message,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                CompletedAtUtc = DateTimeOffset.UtcNow
+            });
+
+            await _context.SaveChangesAsync(ct);
+        }
+
+        private async Task ResetForManualRestartAsync(KycUploadDetails upload, CancellationToken ct)
+        {
+            foreach (var image in upload.Images)
+                ResetImageValidation(image);
+
+            var searchDec = await _context.SearchResponseDecrypted
+                .Where(x => x.KycUploadId == upload.KycUploadId)
+                .ToListAsync(ct);
+            var searchEnc = await _context.SearchResponseEncrypted
+                .Where(x => x.KycUploadId == upload.KycUploadId)
+                .ToListAsync(ct);
+            var downloadDec = await _context.DownloadResponseDecrypted
+                .Where(x => x.KycUploadId == upload.KycUploadId)
+                .ToListAsync(ct);
+            var downloadEnc = await _context.DownloadResponseEncrypted
+                .Where(x => x.KycUploadId == upload.KycUploadId)
+                .ToListAsync(ct);
+            var zipRows = await _context.ZipFileUploadDetails
+                .Where(x => x.KycUploadId == upload.KycUploadId)
+                .ToListAsync(ct);
+            var updationRows = await _context.KycUpdationResponses
+                .Where(x => x.KycUploadId == upload.KycUploadId)
+                .ToListAsync(ct);
+
+            if (searchDec.Count > 0) _context.SearchResponseDecrypted.RemoveRange(searchDec);
+            if (searchEnc.Count > 0) _context.SearchResponseEncrypted.RemoveRange(searchEnc);
+            if (downloadDec.Count > 0) _context.DownloadResponseDecrypted.RemoveRange(downloadDec);
+            if (downloadEnc.Count > 0) _context.DownloadResponseEncrypted.RemoveRange(downloadEnc);
+            if (zipRows.Count > 0) _context.ZipFileUploadDetails.RemoveRange(zipRows);
+            if (updationRows.Count > 0) _context.KycUpdationResponses.RemoveRange(updationRows);
+
+            upload.Status = KycWorkflowStatus.Draft;
+            upload.OcrStatus = OcrStatus.Pending;
+            upload.ValidationStatus = ValidationStatus.Pass;
+            upload.DedupeStatus = DedupeStatus.NotChecked;
+            upload.FailureReason = null;
+            upload.AutomationStatus = AutomationRunStatus.Queued;
+            upload.RetryAttemptCount = 0;
+            upload.NextRetryAtUtc = null;
+            upload.LastAutomationStartedAtUtc = null;
+            upload.LastAutomationCompletedAtUtc = null;
+            upload.AutomationLockedUntilUtc = null;
+            upload.LastFailedStep = null;
+            upload.LastAutomationError = null;
+            upload.SubmittedAtUtc = null;
+            upload.CompletedAtUtc = null;
+            upload.SearchExecuted = false;
+            upload.SearchFound = null;
+            upload.CkycDownloadedAtUtc = null;
+            upload.CkycNumber = null;
+            upload.DedupeExecuted = false;
+            upload.DedupePassed = null;
+            upload.DedupeCheckedAtUtc = null;
+            upload.DedupeMessage = null;
+
+            await _context.SaveChangesAsync(ct);
+        }
+
         private async Task<List<SavedKycRecord>> GetDbRecordsAsync()
         {
             var uploads = await _context.KycUploadDetails
                 .Include(x => x.Images)
                 .Include(x => x.County)
                 .Include(x => x.City)
+                .OrderByDescending(x => x.CreatedAtUtc)
                 .AsSplitQuery()
                 .ToListAsync();
 
@@ -134,6 +338,7 @@ namespace Bank_Web.Controllers.Api
                 return new SavedKycRecord
                 {
                     Id = upload.KycUploadId.ToString(),
+                    RequestRef = upload.RequestRef,
                     KycId = upload.RequestRef,
                     CustomerName = $"{upload.FirstName} {upload.LastName}".Trim(),
                     PPSNumber = upload.PPSN,
@@ -150,6 +355,16 @@ namespace Bank_Web.Controllers.Api
                     Address = upload.AddressLine1,
                     City = upload.City?.CityName ?? "",
                     Eircode = upload.Eircode,
+                    IsPEP = upload.IsPEP,
+                    RiskRating = upload.RiskRating.ToString(),
+                    AutomationStatus = MapAutomationStatus(upload.AutomationStatus),
+                    RetryAttemptCount = upload.RetryAttemptCount,
+                    MaxRetryAttempts = upload.MaxRetryAttempts,
+                    NextRetryAtUtc = upload.NextRetryAtUtc,
+                    LastAutomationError = upload.LastAutomationError ?? "",
+                    LastFailedStep = upload.LastFailedStep ?? "",
+                    CanEditAfterFailure = IsManuallyRecoverable(upload),
+                    CanRestartAutomation = IsManuallyRecoverable(upload),
 
                     PscFrontFileName = front?.FileName ?? "",
                     PscBackFileName = back?.FileName ?? "",
@@ -199,11 +414,21 @@ namespace Bank_Web.Controllers.Api
             if (!string.IsNullOrWhiteSpace(transactionStatus))
             {
                 if (transactionStatus.Equals("Success", StringComparison.OrdinalIgnoreCase))
-                    records = records.Take(2);
+                {
+                    records = records.Where(x =>
+                        x.Status.Equals("Completed", StringComparison.OrdinalIgnoreCase));
+                }
                 else if (transactionStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase))
-                    records = records.Take(1);
+                {
+                    records = records.Where(x =>
+                        x.Status.Equals("Failed", StringComparison.OrdinalIgnoreCase));
+                }
                 else if (transactionStatus.Equals("Pending", StringComparison.OrdinalIgnoreCase))
-                    records = records.Take(1);
+                {
+                    records = records.Where(x =>
+                        x.Status.Equals("Pending", StringComparison.OrdinalIgnoreCase) ||
+                        x.Status.Equals("Processing", StringComparison.OrdinalIgnoreCase));
+                }
             }
 
             return Ok(records);
@@ -279,6 +504,7 @@ namespace Bank_Web.Controllers.Api
             return Ok(new SavedKycRecord
             {
                 Id = upload.KycUploadId.ToString(),
+                RequestRef = upload.RequestRef,
                 KycId = upload.RequestRef,
                 CustomerName = $"{upload.FirstName} {upload.LastName}".Trim(),
                 PPSNumber = upload.PPSN,
@@ -295,6 +521,16 @@ namespace Bank_Web.Controllers.Api
                 Address = upload.AddressLine1,
                 City = upload.City?.CityName ?? "",
                 Eircode = upload.Eircode,
+                IsPEP = upload.IsPEP,
+                RiskRating = upload.RiskRating.ToString(),
+                AutomationStatus = MapAutomationStatus(upload.AutomationStatus),
+                RetryAttemptCount = upload.RetryAttemptCount,
+                MaxRetryAttempts = upload.MaxRetryAttempts,
+                NextRetryAtUtc = upload.NextRetryAtUtc,
+                LastAutomationError = upload.LastAutomationError ?? "",
+                LastFailedStep = upload.LastFailedStep ?? "",
+                CanEditAfterFailure = IsManuallyRecoverable(upload),
+                CanRestartAutomation = IsManuallyRecoverable(upload),
 
                 PscFrontFileName = front?.FileName ?? "",
                 PscBackFileName = back?.FileName ?? "",
@@ -314,23 +550,45 @@ namespace Bank_Web.Controllers.Api
         public async Task<IActionResult> GetDashboard()
         {
             var records = await GetAllRecordsAsync();
+            var pendingCount = records.Count(x => x.Status == "Pending");
+            var processingCount = records.Count(x => x.Status == "Processing");
+            var completedCount = records.Count(x => x.Status == "Completed");
+            var failedCount = records.Count(x => x.Status == "Failed");
+
+            var alerts = new List<string>();
+
+            var oldPendingCount = records.Count(x =>
+                (x.Status == "Pending" || x.Status == "Processing") &&
+                x.CreatedDate <= DateTime.UtcNow.AddDays(-2));
+
+            if (oldPendingCount > 0)
+                alerts.Add($"{oldPendingCount} records pending or processing for more than 2 days");
+
+            if (failedCount > 0)
+                alerts.Add($"{failedCount} failed records need review or restart");
+
+            var waitingRetryCount = records.Count(x =>
+                x.AutomationStatus.Equals("Waiting Retry", StringComparison.OrdinalIgnoreCase));
+
+            if (waitingRetryCount > 0)
+                alerts.Add($"{waitingRetryCount} records are currently waiting for the next retry");
 
             var dashboard = new
             {
                 summary = new
                 {
                     total = records.Count,
-                    pending = records.Count(x => x.Status == "Pending"),
-                    processing = records.Count(x => x.Status == "Processing"),
-                    completed = records.Count(x => x.Status == "Completed"),
-                    failed = records.Count(x => x.Status == "Failed")
+                    pending = pendingCount,
+                    processing = processingCount,
+                    completed = completedCount,
+                    failed = failedCount
                 },
                 statusDistribution = new[]
                 {
-                    new { label = "Pending", count = records.Count(x => x.Status == "Pending") },
-                    new { label = "Processing", count = records.Count(x => x.Status == "Processing") },
-                    new { label = "Completed", count = records.Count(x => x.Status == "Completed") },
-                    new { label = "Failed", count = records.Count(x => x.Status == "Failed") }
+                    new { label = "Pending", count = pendingCount },
+                    new { label = "Processing", count = processingCount },
+                    new { label = "Completed", count = completedCount },
+                    new { label = "Failed", count = failedCount }
                 },
                 uploadTrend = records
                     .GroupBy(x => x.CreatedDate.ToString("yyyy-MM-dd"))
@@ -343,20 +601,16 @@ namespace Bank_Web.Controllers.Api
 
                 transactionStats = new[]
                 {
-                    new { label = "Success", count = 2 },
-                    new { label = "Failed", count = 1 },
-                    new { label = "Pending", count = 1 }
+                    new { label = "Success", count = completedCount },
+                    new { label = "Failed", count = failedCount },
+                    new { label = "Pending", count = pendingCount + processingCount }
                 },
 
                 recentUploads = records
                     .OrderByDescending(x => x.CreatedDate)
                     .Take(4),
 
-                alerts = new[]
-                {
-                    "2 records pending for more than 2 days",
-                    "1 failed CKYC transaction found"
-                }
+                alerts
             };
 
             return Ok(dashboard);
@@ -401,12 +655,7 @@ namespace Bank_Web.Controllers.Api
             var lastName = (request.LastName ?? "").Trim();
             var ppsn = (request.PpsNumber ?? "").Trim();
 
-            var todayPrefix = $"KYC-{DateTime.UtcNow:yyyyMMdd}-";
-
-            var todayCount = await _context.KycUploadDetails
-                .CountAsync(x => x.RequestRef.StartsWith(todayPrefix));
-
-            var requestRef = $"{todayPrefix}{(todayCount + 1):D6}";
+            var requestRef = await KycRequestRefGenerator.GenerateAsync(_context, HttpContext.RequestAborted);
 
             var identityHash = Sha256Hex($"{firstName}|{middleName}|{lastName}|{dob:yyyy-MM-dd}|{ppsn}");
 
@@ -535,21 +784,197 @@ namespace Bank_Web.Controllers.Api
             _context.KycUploadDetails.Add(upload);
             await _context.SaveChangesAsync();
 
-            var automationResult = await _automationService.ProcessRecordAsync(upload.KycUploadId);
-
             return Ok(new
             {
                 success = true,
                 id = upload.KycUploadId.ToString(),
-                message = automationResult.Success
-                    ? $"KYC record created successfully. Automation: {automationResult.Message}"
-                    : $"KYC record created successfully, but automation stopped: {automationResult.Message}",
+                message = "KYC record created successfully and queued for automation.",
                 automation = new
                 {
-                    automationResult.Success,
-                    automationResult.IsComplete,
-                    automationResult.Message
+                    status = upload.AutomationStatus.ToString(),
+                    upload.RetryAttemptCount,
+                    upload.MaxRetryAttempts,
+                    upload.NextRetryAtUtc
                 }
+            });
+        }
+
+        [HttpPost("{id}/update-failed")]
+        public async Task<IActionResult> UpdateFailedRecord(string id, [FromForm] UpdateFailedKycRequest request)
+        {
+            if (!Guid.TryParse(id, out var guidId))
+                return BadRequest("Invalid record id.");
+
+            var upload = await _context.KycUploadDetails
+                .Include(x => x.Images)
+                .FirstOrDefaultAsync(x => x.KycUploadId == guidId, HttpContext.RequestAborted);
+
+            if (upload == null)
+                return NotFound("Record not found.");
+
+            if (!IsManuallyRecoverable(upload))
+                return BadRequest("Only permanently failed records can be edited for manual recovery.");
+
+            if (!DateOnly.TryParse(request.DateOfBirth, out var dob))
+                return BadRequest("Invalid Date of Birth.");
+
+            var countyName = (request.CountyName ?? request.County ?? "").Trim();
+            var cityName = (request.CityName ?? request.City ?? "").Trim();
+            var addressLine1 = (request.AddressLine1 ?? request.Address ?? "").Trim();
+
+            var location = await ResolveLocationAsync(countyName, cityName, HttpContext.RequestAborted);
+            if (!location.Ok || location.County == null || location.City == null)
+                return BadRequest(location.Error);
+
+            var frontUpload = await ReadAndValidateFileAsync(request.PscFront, required: false);
+            if (!frontUpload.Ok) return BadRequest("PSC Front: " + frontUpload.Error);
+
+            var backUpload = await ReadAndValidateFileAsync(request.PscBack, required: false);
+            if (!backUpload.Ok) return BadRequest("PSC Back: " + backUpload.Error);
+
+            var frontImage = upload.Images.FirstOrDefault(x => x.DocumentType == DocumentType.PSCFront);
+            var backImage = upload.Images.FirstOrDefault(x => x.DocumentType == DocumentType.PSCBack);
+
+            if (frontImage == null && frontUpload.Bytes.Length == 0)
+                return BadRequest("PSC Front image is missing. Upload a replacement file.");
+
+            if (backImage == null && backUpload.Bytes.Length == 0)
+                return BadRequest("PSC Back image is missing. Upload a replacement file.");
+
+            if (frontImage == null)
+            {
+                frontImage = new KycUploadImage
+                {
+                    KycUploadId = upload.KycUploadId,
+                    DocumentType = DocumentType.PSCFront
+                };
+                upload.Images.Add(frontImage);
+            }
+
+            if (backImage == null)
+            {
+                backImage = new KycUploadImage
+                {
+                    KycUploadId = upload.KycUploadId,
+                    DocumentType = DocumentType.PSCBack
+                };
+                upload.Images.Add(backImage);
+            }
+
+            var firstName = (request.FirstName ?? "").Trim();
+            var middleName = (request.MiddleName ?? "").Trim();
+            var lastName = (request.LastName ?? "").Trim();
+            var ppsn = (request.PpsNumber ?? "").Trim();
+
+            if (string.IsNullOrWhiteSpace(firstName) ||
+                string.IsNullOrWhiteSpace(lastName) ||
+                string.IsNullOrWhiteSpace(ppsn) ||
+                string.IsNullOrWhiteSpace(request.EmailAddress) ||
+                string.IsNullOrWhiteSpace(request.PhoneNumber) ||
+                string.IsNullOrWhiteSpace(addressLine1) ||
+                string.IsNullOrWhiteSpace(countyName) ||
+                string.IsNullOrWhiteSpace(cityName) ||
+                string.IsNullOrWhiteSpace(request.Eircode))
+            {
+                return BadRequest("All core customer fields are required before restarting automation.");
+            }
+
+            upload.FirstName = firstName;
+            upload.MiddleName = middleName;
+            upload.LastName = lastName;
+            upload.DateOfBirth = dob;
+            upload.PPSN = ppsn;
+            upload.Email = (request.EmailAddress ?? "").Trim();
+            upload.Phone = (request.PhoneNumber ?? "").Trim();
+            upload.AddressLine1 = addressLine1;
+            upload.CountyId = location.County.CountyId;
+            upload.CityId = location.City.CityId;
+            upload.Eircode = (request.Eircode ?? "").Trim();
+            upload.IsPEP = request.IsPEP;
+            upload.RiskRating = ParseRiskRating(request.RiskRating);
+            upload.IdentityHash = Sha256Hex($"{firstName}|{middleName}|{lastName}|{dob:yyyy-MM-dd}|{ppsn}");
+
+            if (frontUpload.Bytes.Length > 0)
+            {
+                frontImage.FileName = frontUpload.OriginalFileName;
+                frontImage.ContentType = frontUpload.ContentType;
+                frontImage.FileSizeBytes = frontUpload.Size;
+                frontImage.FileHashSha256 = Sha256Hex(frontUpload.Bytes);
+                frontImage.ImageBytes = frontUpload.Bytes;
+                frontImage.UploadedAtUtc = DateTimeOffset.UtcNow;
+            }
+
+            if (backUpload.Bytes.Length > 0)
+            {
+                backImage.FileName = backUpload.OriginalFileName;
+                backImage.ContentType = backUpload.ContentType;
+                backImage.FileSizeBytes = backUpload.Size;
+                backImage.FileHashSha256 = Sha256Hex(backUpload.Bytes);
+                backImage.ImageBytes = backUpload.Bytes;
+                backImage.UploadedAtUtc = DateTimeOffset.UtcNow;
+            }
+
+            ResetImageValidation(frontImage);
+            ResetImageValidation(backImage);
+
+            await _context.SaveChangesAsync(HttpContext.RequestAborted);
+            await AddManualRecoveryLogAsync(
+                upload.KycUploadId,
+                "Manual Recovery Edit",
+                "Failed record updated. Manual restart is now available.",
+                HttpContext.RequestAborted);
+
+            return Ok(new
+            {
+                success = true,
+                message = "Failed record updated successfully. Restart processing to run automation again.",
+                id = upload.KycUploadId,
+                requestRef = upload.RequestRef
+            });
+        }
+
+        [HttpPost("{id}/restart-automation")]
+        public async Task<IActionResult> RestartAutomation(string id)
+        {
+            if (!Guid.TryParse(id, out var guidId))
+                return BadRequest("Invalid record id.");
+
+            var upload = await _context.KycUploadDetails
+                .Include(x => x.Images)
+                .FirstOrDefaultAsync(x => x.KycUploadId == guidId, HttpContext.RequestAborted);
+
+            if (upload == null)
+                return NotFound("Record not found.");
+
+            if (!IsManuallyRecoverable(upload))
+                return BadRequest("Only permanently failed records can be restarted manually.");
+
+            await ResetForManualRestartAsync(upload, HttpContext.RequestAborted);
+            await AddManualRecoveryLogAsync(
+                upload.KycUploadId,
+                "Manual Restart Requested",
+                "Automation manually restarted after record correction.",
+                HttpContext.RequestAborted);
+
+            var result = await _automationService.ProcessRecordAsync(guidId, HttpContext.RequestAborted);
+
+            if (!result.Success)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    isComplete = result.IsComplete,
+                    message = result.Message
+                });
+            }
+
+            return Ok(new
+            {
+                success = true,
+                isComplete = result.IsComplete,
+                willRetry = result.WillRetry,
+                nextRetryAtUtc = result.NextRetryAtUtc,
+                message = result.Message
             });
         }
 

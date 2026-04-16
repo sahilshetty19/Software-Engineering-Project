@@ -136,6 +136,8 @@ public sealed class BankDbContext : DbContext
         // Indexes / uniques
         modelBuilder.Entity<KycUploadDetails>().HasIndex(x => x.RequestRef).IsUnique();
         modelBuilder.Entity<KycUploadDetails>().HasIndex(x => x.IdentityHash);
+        modelBuilder.Entity<KycUploadDetails>().HasIndex(x => new { x.AutomationStatus, x.NextRetryAtUtc });
+        modelBuilder.Entity<KycUploadDetails>().HasIndex(x => x.AutomationLockedUntilUtc);
 
         modelBuilder.Entity<ZipFileUploadDetails>().HasIndex(x => x.KycUploadId).IsUnique();
         modelBuilder.Entity<BankCustomerDetails>().HasIndex(x => x.KycUploadId).IsUnique();

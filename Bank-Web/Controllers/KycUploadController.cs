@@ -54,8 +54,7 @@ public class KycUploadController : Controller
 
         var dob = DateOnly.FromDateTime(vm.DateOfBirth);
 
-        var requestRef = $"REQ-{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
-        if (requestRef.Length > 60) requestRef = requestRef[..60];
+        var requestRef = await KycRequestRefGenerator.GenerateAsync(_context, HttpContext.RequestAborted);
 
         var firstName = (vm.FirstName ?? "").Trim();
         var middleName = (vm.MiddleName ?? "").Trim();
@@ -184,6 +183,7 @@ public class KycUploadController : Controller
         _context.KycUploadDetails.Add(upload);
         await _context.SaveChangesAsync();
 
+        TempData["Info"] = "KYC record created and queued for automation.";
         return RedirectToAction(nameof(Details), new { id = upload.KycUploadId });
     }
 

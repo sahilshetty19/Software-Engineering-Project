@@ -21,6 +21,16 @@ export const createKycRecord = (formData) =>
     },
   });
 
+export const updateFailedKycRecord = (id, formData) =>
+  api.post(`/${id}/update-failed`, formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+
+export const restartFailedKycAutomation = (id) =>
+  api.post(`/${id}/restart-automation`);
+
 export const getDownloadUrl = (id, fileName) =>
   `${API_BASE_URL}/api/kyc/${id}/download?fileName=${encodeURIComponent(fileName)}`;
 
