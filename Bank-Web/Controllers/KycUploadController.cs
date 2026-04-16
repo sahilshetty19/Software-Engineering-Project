@@ -2,10 +2,12 @@
 using Bank.Web.Models;
 using Bank.Web.Services;
 using Bank.Web.ViewModels;
+using BCrypt.Net;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Bank.Web.Controllers;
 
@@ -14,12 +16,16 @@ public class KycUploadController : Controller
     private readonly BankDbContext _context;
     private readonly CkycApiClient _ckyc;
     private readonly PscOcrService _pscOcr;
+    private readonly AesGcmCryptoService _aes;
+    private readonly CkycStatusClient _ckycStatus;
 
-    public KycUploadController(BankDbContext context, CkycApiClient ckyc, PscOcrService pscOcr)
+    public KycUploadController(BankDbContext context, CkycApiClient ckyc, PscOcrService pscOcr, AesGcmCryptoService aes, CkycStatusClient ckycStatus)
     {
         _context = context;
         _ckyc = ckyc;
         _pscOcr = pscOcr;
+        _aes = aes;
+        _ckycStatus = ckycStatus;
     }
 
     [HttpGet]
@@ -370,6 +376,19 @@ public class KycUploadController : Controller
             return RedirectToAction(nameof(Details), new { id });
         }
 
+        var requestObj = new
+        {
+            firstName = upload.FirstName,
+            middleName = upload.MiddleName,
+            lastName = upload.LastName,
+            dateOfBirth = upload.DateOfBirth.ToString("yyyy-MM-dd"),
+            ppsn = upload.PPSN
+        };
+
+        var requestBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(requestObj);
+        var encryptedRequestBytes = _aes.Encrypt(requestBytes);
+        var requestHash = Sha256Hex(requestBytes);
+
         var (ok, message, found, ckycNumber) = await _ckyc.SearchAsync(
             upload.FirstName,
             upload.MiddleName,
@@ -377,8 +396,34 @@ public class KycUploadController : Controller
             upload.DateOfBirth,
             upload.PPSN);
 
+        var responseObj = new
+        {
+            requestRef = upload.RequestRef,
+            kycUploadId = upload.KycUploadId,
+            timestampUtc = DateTimeOffset.UtcNow,
+            ok,
+            message,
+            found,
+            ckycNumber
+        };
+
+        var responseBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(responseObj);
+        var encryptedResponseBytes = _aes.Encrypt(responseBytes);
+        var responseHash = Sha256Hex(responseBytes);
+
+        _context.SearchResponseEncrypted.Add(new SearchResponseEncrypted
+        {
+            KycUploadId = upload.KycUploadId,
+            RequestHashSha256 = requestHash,
+            ResponseHashSha256 = responseHash,
+            EncryptedRequestBytes = encryptedRequestBytes,
+            EncryptedResponseBytes = encryptedResponseBytes,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        });
+
         if (!ok)
         {
+            await _context.SaveChangesAsync();
             TempData["Error"] = message;
             return RedirectToAction(nameof(Details), new { id });
         }
@@ -401,12 +446,36 @@ public class KycUploadController : Controller
         await _context.SaveChangesAsync();
         return RedirectToAction(nameof(Details), new { id });
     }
+    [HttpGet]
+    public async Task<IActionResult> ViewLatestSearchDecrypted(Guid id)
+    {
+        var row = await _context.SearchResponseEncrypted
+            .AsNoTracking()
+            .Where(x => x.KycUploadId == id)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .FirstOrDefaultAsync();
 
+        if (row == null)
+            return Content("No encrypted search response found for this upload.");
+
+        var reqPlain = _aes.Decrypt(row.EncryptedRequestBytes);
+        var respPlain = _aes.Decrypt(row.EncryptedResponseBytes);
+
+        var reqText = Encoding.UTF8.GetString(reqPlain);
+        var respText = Encoding.UTF8.GetString(respPlain);
+
+        return Content(
+            $"--- Decrypted Request ---\n{reqText}\n\n--- Decrypted Response ---\n{respText}",
+            "text/plain"
+        );
+    }
     [HttpPost]
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> DownloadFromCkyc(Guid id)
     {
-        var upload = await _context.KycUploadDetails.FirstOrDefaultAsync(x => x.KycUploadId == id);
+        var upload = await _context.KycUploadDetails
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
         if (upload == null) return NotFound();
 
         if (upload.SearchExecuted != true || upload.SearchFound != true || string.IsNullOrWhiteSpace(upload.CkycNumber))
@@ -415,18 +484,117 @@ public class KycUploadController : Controller
             return RedirectToAction(nameof(Details), new { id });
         }
 
-        _ = await _ckyc.DownloadProfileJsonAsync(upload.CkycNumber);
+        var json = await _ckyc.DownloadProfileJsonAsync(upload.CkycNumber);
+        json ??= "";
+
+        var plainBytes = Encoding.UTF8.GetBytes(json);
+        var respHash = Sha256Hex(plainBytes);
+        var encBytes = _aes.Encrypt(plainBytes);
+
+        _context.DownloadResponseEncrypted.Add(new DownloadResponseEncrypted
+        {
+            KycUploadId = upload.KycUploadId,
+            CkycNumber = upload.CkycNumber.Trim(),
+            ResponseHashSha256 = respHash,
+            EncryptedResponseBytes = encBytes,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        });
 
         upload.CkycDownloadedAtUtc = DateTimeOffset.UtcNow;
+
         await _context.SaveChangesAsync();
 
-        TempData["Info"] = "CKYC record downloaded successfully. You can now push it to internal bank records.";
+        TempData["Info"] = "CKYC record downloaded and stored as ENCRYPTED response. Use Decrypt button to view/save decrypted.";
         return RedirectToAction(nameof(Details), new { id });
     }
 
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> SubmitToCkyc(Guid id)
+    public async Task<IActionResult> DecryptLatestDownloadResponse(Guid id)
+    {
+        var upload = await _context.KycUploadDetails
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        if (string.IsNullOrWhiteSpace(upload.CkycNumber))
+        {
+            TempData["Error"] = "No CKYC Number found. Download must be completed first.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var enc = await _context.DownloadResponseEncrypted
+            .AsNoTracking()
+            .Where(x => x.KycUploadId == id)
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .FirstOrDefaultAsync();
+
+        if (enc == null)
+        {
+            TempData["Error"] = "No encrypted download response found for this upload.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        if (!string.Equals(enc.CkycNumber?.Trim(), upload.CkycNumber.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            TempData["Error"] = "Mismatch: encrypted CKYC number does not match current upload CKYC number.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        if (enc.EncryptedResponseBytes == null || enc.EncryptedResponseBytes.Length == 0)
+        {
+            TempData["Error"] = "Encrypted response bytes are empty.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var alreadyDecrypted = await _context.DownloadResponseDecrypted
+            .AsNoTracking()
+            .AnyAsync(x => x.KycUploadId == id && x.ResponseHashSha256 == enc.ResponseHashSha256);
+
+        if (alreadyDecrypted)
+        {
+            TempData["Info"] = "Latest download response is already decrypted.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        string decryptedJson;
+        try
+        {
+            var plainBytes = _aes.Decrypt(enc.EncryptedResponseBytes);
+            decryptedJson = Encoding.UTF8.GetString(plainBytes);
+
+            var recomputedHash = Sha256Hex(plainBytes);
+            if (!string.Equals(recomputedHash, enc.ResponseHashSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                TempData["Error"] = "Hash validation failed after decrypt (integrity check failed).";
+                return RedirectToAction(nameof(Details), new { id });
+            }
+        }
+        catch (Exception ex)
+        {
+            TempData["Error"] = "Decrypt failed: " + ex.Message;
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        _context.DownloadResponseDecrypted.Add(new DownloadResponseDecrypted
+        {
+            KycUploadId = id,
+            CkycNumber = upload.CkycNumber.Trim(),
+            ResponseHashSha256 = enc.ResponseHashSha256,
+            ResponseJson = decryptedJson,
+            PayloadJson = decryptedJson,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        });
+
+        await _context.SaveChangesAsync();
+
+        TempData["Info"] = "Download response decrypted and saved successfully.";
+        return RedirectToAction(nameof(Details), new { id });
+    }
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> GenerateZip(Guid id)
     {
         var upload = await _context.KycUploadDetails
             .Include(x => x.Images)
@@ -434,36 +602,122 @@ public class KycUploadController : Controller
 
         if (upload == null) return NotFound();
 
-        if (upload.SearchExecuted != true || upload.SearchFound != false)
+        var frontOk = upload.Images.Any(x => x.DocumentType == DocumentType.PSCFront && x.IsImageValidated);
+        var backOk = upload.Images.Any(x => x.DocumentType == DocumentType.PSCBack && x.IsImageValidated);
+
+        if (!frontOk || !backOk)
         {
-            TempData["Error"] = "You can only upload to CKYC after running Search and getting NOT FOUND.";
+            TempData["Error"] = "Validate PSC Front and PSC Back before generating ZIP.";
             return RedirectToAction(nameof(Details), new { id });
         }
 
         var zipBytes = ZipBuilder.BuildKycZip(upload);
-
-        var requestRef = upload.RequestRef;
-        var bankCode = "BANKDEMO";
-
-        var (ok, message, submissionRef) = await _ckyc.UploadZipAsync(
-            zipBytes,
-            zipFileName: $"{requestRef}.zip",
-            bankCode: bankCode,
-            requestRef: requestRef);
-
-        if (!ok)
+        if (zipBytes == null || zipBytes.Length == 0)
         {
-            TempData["Error"] = "CKYC Upload failed: " + message;
+            TempData["Error"] = "ZIP generation failed.";
             return RedirectToAction(nameof(Details), new { id });
         }
 
-        upload.SubmittedAtUtc = DateTimeOffset.UtcNow;
-        upload.Status = KycWorkflowStatus.Sent;
+        var zipFileName = $"{upload.RequestRef}.zip";
+        var zipHash = Sha256Hex(zipBytes);
+
+        var existing = await _context.ZipFileUploadDetails
+            .FirstOrDefaultAsync(z => z.KycUploadId == upload.KycUploadId);
+
+        if (existing == null)
+        {
+            _context.ZipFileUploadDetails.Add(new ZipFileUploadDetails
+            {
+                ZipUploadId = Guid.NewGuid(),
+                KycUploadId = upload.KycUploadId,
+                ZipFileName = zipFileName,
+                ZipHashSha256 = zipHash,
+                ZipSizeBytes = zipBytes.LongLength,
+                ZipBytes = zipBytes,
+                SftpRemotePath = null,
+                UploadStatus = 0,
+                UploadedAtUtc = DateTime.UtcNow,
+                FailureReason = null
+            });
+        }
+        else
+        {
+            existing.ZipFileName = zipFileName;
+            existing.ZipHashSha256 = zipHash;
+            existing.ZipSizeBytes = zipBytes.LongLength;
+            existing.ZipBytes = zipBytes;
+            existing.SftpRemotePath = null;
+            existing.UploadStatus = 0;
+            existing.UploadedAtUtc = DateTime.UtcNow;
+            existing.FailureReason = null;
+        }
+
+        upload.Status = KycWorkflowStatus.Zipped;
+
         await _context.SaveChangesAsync();
 
-        TempData["Info"] = $"Sent to CKYC. Tracking: {submissionRef}";
-        return RedirectToAction(nameof(Details), new { id });
+        return File(zipBytes, "application/zip", zipFileName);
     }
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SendZipToSftp(Guid id, [FromServices] Bank.Web.Services.SftpZipUploader sftp)
+    {
+        var upload = await _context.KycUploadDetails
+            .FirstOrDefaultAsync(x => x.KycUploadId == id);
+
+        if (upload == null) return NotFound();
+
+        var zipRow = await _context.ZipFileUploadDetails
+            .FirstOrDefaultAsync(z => z.KycUploadId == id);
+
+        if (zipRow == null)
+        {
+            TempData["Error"] = "ZIP is not generated yet. Generate ZIP first.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        if (zipRow.ZipBytes == null || zipRow.ZipBytes.Length == 0)
+        {
+            TempData["Error"] = "ZIP bytes are empty. Generate ZIP again.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        var (ok, remotePath, error) = await sftp.UploadBytesAsync(zipRow.ZipBytes, zipRow.ZipFileName);
+
+        if (ok)
+        {
+            zipRow.SftpRemotePath = remotePath;
+            zipRow.UploadStatus = 1;
+            zipRow.FailureReason = null;
+            zipRow.UploadedAtUtc = DateTime.UtcNow;
+
+
+            upload.SubmittedAtUtc = DateTimeOffset.UtcNow;
+            upload.Status = KycWorkflowStatus.Sent;
+            await _context.SaveChangesAsync();
+
+            TempData["Info"] = $"ZIP uploaded to SFTP: {remotePath}";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+        else
+        {
+            zipRow.UploadStatus = 2;
+            zipRow.FailureReason = error;
+            zipRow.UploadedAtUtc = DateTime.UtcNow;
+
+            upload.SubmittedAtUtc = DateTimeOffset.UtcNow;
+            upload.Status = KycWorkflowStatus.Failed;
+            await _context.SaveChangesAsync();
+
+            TempData["Error"] = "SFTP upload failed: " + error;
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+    }
+
+
+
+    
 
     [HttpPost]
     [ValidateAntiForgeryToken]
@@ -472,25 +726,44 @@ public class KycUploadController : Controller
         var upload = await _context.KycUploadDetails.FirstOrDefaultAsync(x => x.KycUploadId == id);
         if (upload == null) return NotFound();
 
+        
         if (upload.Status != KycWorkflowStatus.Sent)
         {
             TempData["Error"] = "You can only check status after uploading to CKYC.";
             return RedirectToAction(nameof(Details), new { id });
         }
 
-        var (status, message, ckycNumber) = await _ckyc.GetStatusAsync(upload.RequestRef);
+        var st = await _ckycStatus.GetInboundStatus(upload.RequestRef);
 
-        if (status.Equals("Success", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(ckycNumber))
+        if (st == null)
         {
-            upload.CkycNumber = ckycNumber;
-            upload.CompletedAtUtc = DateTimeOffset.UtcNow;
-            upload.Status = KycWorkflowStatus.Completed;
-            await _context.SaveChangesAsync();
-            TempData["Info"] = $"CKYC Success. CKYC Number: {ckycNumber}";
+            TempData["Info"] = "CKYC status: Not found (RequestRef not received by CKYC server yet).";
             return RedirectToAction(nameof(Details), new { id });
         }
 
-        TempData["Info"] = $"CKYC status: {status} - {message}";
+        var status = (st.Status ?? "").Trim();
+
+        if (status.Equals("Success", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(st.CkycNumber))
+        {
+            upload.CkycNumber = st.CkycNumber.Trim();
+            upload.CompletedAtUtc = DateTimeOffset.UtcNow;
+            upload.Status = KycWorkflowStatus.Completed;
+
+            await _context.SaveChangesAsync();
+            TempData["Info"] = $"CKYC Success. CKYC Number: {upload.CkycNumber}";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        // Failed
+        if (status.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            TempData["Error"] = $"CKYC status: Failed - {(st.FailureReason ?? st.StatusMessage ?? "Unknown error")}";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        // Still processing / received
+        TempData["Info"] = $"CKYC status: {status} - {(st.StatusMessage ?? "")}".Trim();
         return RedirectToAction(nameof(Details), new { id });
     }
 
@@ -505,103 +778,119 @@ public class KycUploadController : Controller
 
         if (upload == null) return NotFound();
 
-        if (string.IsNullOrWhiteSpace(upload.CkycNumber))
+        var hasDownload = upload.CkycDownloadedAtUtc != null;
+
+        string ckycNumber = "";
+        string firstName = "";
+        string middleName = "";
+        string lastName = "";
+        string ppsn = "";
+        DateOnly dob = upload.DateOfBirth;
+
+        if (hasDownload)
         {
-            TempData["Error"] = "No CKYC Number available to push.";
-            return RedirectToAction(nameof(Details), new { id });
+            var dec = await _context.DownloadResponseDecrypted
+                .AsNoTracking()
+                .Where(x => x.KycUploadId == id)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .FirstOrDefaultAsync();
+
+            if (dec == null || string.IsNullOrWhiteSpace(dec.ResponseJson))
+            {
+                TempData["Error"] = "No decrypted download response found. Click 'Decrypt Download' first.";
+                return RedirectToAction(nameof(Details), new { id });
+            }
+
+            using var doc = JsonDocument.Parse(dec.ResponseJson);
+            var root = doc.RootElement;
+
+            string GetString(string name)
+                => root.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String ? (p.GetString() ?? "") : "";
+
+            ckycNumber = GetString("ckycNumber").Trim();
+            firstName = GetString("firstName").Trim();
+            middleName = GetString("middleName").Trim();
+            lastName = GetString("lastName").Trim();
+            ppsn = GetString("ppsn").Trim();
+
+            var dobStr = GetString("dateOfBirth").Trim();
+            if (DateOnly.TryParse(dobStr, out var parsedDob))
+                dob = parsedDob;
+
+            if (string.IsNullOrWhiteSpace(ckycNumber))
+            {
+                TempData["Error"] = "Decrypted download JSON does not contain 'ckycNumber'. Cannot push.";
+                return RedirectToAction(nameof(Details), new { id });
+            }
+
+            upload.CkycNumber = ckycNumber;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(upload.CkycNumber))
+            {
+                TempData["Error"] = "CKYC number not available yet. Please click 'Check CKYC Status' first, then push to bank records.";
+                return RedirectToAction(nameof(Details), new { id });
+            }
+
+            ckycNumber = upload.CkycNumber.Trim();
+            firstName = upload.FirstName?.Trim() ?? "";
+            middleName = upload.MiddleName?.Trim() ?? "";
+            lastName = upload.LastName?.Trim() ?? "";
+            ppsn = upload.PPSN?.Trim() ?? "";
+            dob = upload.DateOfBirth;
         }
 
-        if (upload.SearchFound == true && upload.CkycDownloadedAtUtc == null)
+        var existingCustomer = await _context.BankCustomerDetails
+            .FirstOrDefaultAsync(c => c.CkycNumber == ckycNumber);
+
+        BankCustomerDetails cust;
+
+        if (existingCustomer != null)
         {
-            TempData["Error"] = "Download the CKYC record first, then push.";
-            return RedirectToAction(nameof(Details), new { id });
-        }
-
-        if (upload.SearchFound == false && upload.Status != KycWorkflowStatus.Completed)
-        {
-            TempData["Error"] = "Wait for CKYC Status = Success before pushing.";
-            return RedirectToAction(nameof(Details), new { id });
-        }
-
-        var existingCustomerId = await _context.BankCustomerDetails
-            .AsNoTracking()
-            .Where(c => c.CkycNumber == upload.CkycNumber)
-            .Select(c => (Guid?)c.BankCustomerId)
-            .FirstOrDefaultAsync();
-
-        Guid bankCustomerId;
-
-        if (existingCustomerId.HasValue)
-        {
-            bankCustomerId = existingCustomerId.Value;
-
-            var cust = await _context.BankCustomerDetails.FirstAsync(x => x.BankCustomerId == bankCustomerId);
-            cust.KycUploadId = upload.KycUploadId;
-            cust.FirstName = upload.FirstName;
-            cust.MiddleName = upload.MiddleName;
-            cust.LastName = upload.LastName;
-            cust.DateOfBirth = upload.DateOfBirth;
-            cust.PPSN = upload.PPSN;
-            cust.Email = upload.Email;
-            cust.Phone = upload.Phone;
-            cust.AddressLine1 = upload.AddressLine1;
-            cust.CountyId = upload.CountyId;
-            cust.CityId = upload.CityId;
-            cust.Eircode = upload.Eircode;
-            cust.Country = upload.Country;
-            cust.Nationality = upload.Nationality;
-            cust.Gender = upload.Gender;
-            cust.Occupation = upload.Occupation;
-            cust.EmployerName = upload.EmployerName;
-            cust.SourceOfFunds = upload.SourceOfFunds;
-            cust.IsPEP = upload.IsPEP;
-            cust.RiskRating = upload.RiskRating;
+            cust = existingCustomer;
             cust.UpdatedAtUtc = DateTimeOffset.UtcNow;
         }
         else
         {
-            var cust = new BankCustomerDetails
+            cust = new BankCustomerDetails
             {
                 BankCustomerId = Guid.NewGuid(),
-                KycUploadId = upload.KycUploadId,
-                CkycNumber = upload.CkycNumber,
-
-                FirstName = upload.FirstName,
-                MiddleName = upload.MiddleName,
-                LastName = upload.LastName,
-                DateOfBirth = upload.DateOfBirth,
-
-                Nationality = upload.Nationality,
-                Gender = upload.Gender,
-                PPSN = upload.PPSN,
-
-                Email = upload.Email,
-                Phone = upload.Phone,
-
-                AddressLine1 = upload.AddressLine1,
-                CountyId = upload.CountyId,
-                CityId = upload.CityId,
-                Eircode = upload.Eircode,
-                Country = upload.Country,
-
-                Occupation = upload.Occupation,
-                EmployerName = upload.EmployerName,
-                SourceOfFunds = upload.SourceOfFunds,
-
-                IsPEP = upload.IsPEP,
-                RiskRating = upload.RiskRating,
-
-                IsActive = true,
-                CreatedAtUtc = DateTimeOffset.UtcNow
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                IsActive = true
             };
-
             _context.BankCustomerDetails.Add(cust);
-            bankCustomerId = cust.BankCustomerId;
         }
+
+        cust.KycUploadId = upload.KycUploadId;
+        cust.CkycNumber = ckycNumber;
+
+        cust.FirstName = string.IsNullOrWhiteSpace(firstName) ? upload.FirstName : firstName;
+        cust.MiddleName = string.IsNullOrWhiteSpace(middleName) ? upload.MiddleName : middleName;
+        cust.LastName = string.IsNullOrWhiteSpace(lastName) ? upload.LastName : lastName;
+        cust.DateOfBirth = dob;
+
+        cust.PPSN = string.IsNullOrWhiteSpace(ppsn) ? upload.PPSN : ppsn;
+
+        cust.Email = upload.Email;
+        cust.Phone = upload.Phone;
+        cust.AddressLine1 = upload.AddressLine1;
+        cust.CountyId = upload.CountyId;
+        cust.CityId = upload.CityId;
+        cust.Eircode = upload.Eircode;
+        cust.Country = upload.Country;
+
+        cust.Nationality = upload.Nationality;
+        cust.Gender = upload.Gender;
+        cust.Occupation = upload.Occupation;
+        cust.EmployerName = upload.EmployerName;
+        cust.SourceOfFunds = upload.SourceOfFunds;
+        cust.IsPEP = upload.IsPEP;
+        cust.RiskRating = upload.RiskRating;
 
         var existingHashes = await _context.CustomerImages
             .AsNoTracking()
-            .Where(i => i.BankCustomerId == bankCustomerId)
+            .Where(i => i.BankCustomerId == cust.BankCustomerId)
             .Select(i => i.FileHashSha256)
             .ToListAsync();
 
@@ -616,7 +905,7 @@ public class KycUploadController : Controller
             _context.CustomerImages.Add(new CustomerImage
             {
                 CustomerImageId = Guid.NewGuid(),
-                BankCustomerId = bankCustomerId,
+                BankCustomerId = cust.BankCustomerId,
                 DocumentType = img.DocumentType,
                 FileName = img.FileName,
                 ContentType = string.IsNullOrWhiteSpace(img.ContentType) ? "application/octet-stream" : img.ContentType,
@@ -630,9 +919,10 @@ public class KycUploadController : Controller
         }
 
         upload.Status = KycWorkflowStatus.KycDone;
+
         await _context.SaveChangesAsync();
 
-        TempData["Info"] = "Pushed to internal bank records successfully.";
+        TempData["Info"] = $"Pushed to bank records successfully. Customer CKYC: {ckycNumber}";
         return RedirectToAction(nameof(Details), new { id });
     }
 
@@ -695,11 +985,12 @@ public class KycUploadController : Controller
         var bytes = Encoding.UTF8.GetBytes(input);
         return Sha256Hex(bytes);
     }
-
     private static string Sha256Hex(byte[] bytes)
     {
         using var sha = SHA256.Create();
         var hash = sha.ComputeHash(bytes);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
+
+
 }

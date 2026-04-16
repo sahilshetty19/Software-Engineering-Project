@@ -1,86 +1,51 @@
-// src/services/kycService.js
+import axios from "axios";
 
-const BASE_URL = "https://localhost:7094";
+export const API_BASE_URL = "https://localhost:7094";
 
-async function readError(resp) {
-  const text = await resp.text().catch(() => "");
-  return text || `${resp.status} ${resp.statusText}`;
-}
+const api = axios.create({
+  baseURL: `${API_BASE_URL}/api/kyc`,
+});
 
-/**
- * Fetch active counties from backend.
- * Expected response: [{ id: "guid", name: "Dublin" }, ...]
- */
-export async function getCounties() {
-  const resp = await fetch(`${BASE_URL}/api/counties`, {
-    method: "GET",
+const bulkApi = axios.create({
+  baseURL: `${API_BASE_URL}/api/kyc/bulk-upload`,
+});
+
+export const getDashboard = () => api.get("/dashboard");
+export const getKycRecords = (params = {}) => api.get("", { params });
+export const getKycById = (id) => api.get(`/${id}`);
+
+export const createKycRecord = (formData) =>
+  api.post("", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
   });
 
-  if (!resp.ok) {
-    throw new Error(`getCounties failed: ${await readError(resp)}`);
-  }
-  return resp.json();
-}
+export const getDownloadUrl = (id, fileName) =>
+  `${API_BASE_URL}/api/kyc/${id}/download?fileName=${encodeURIComponent(fileName)}`;
 
-/**
- * Fetch cities for a countyId from backend.
- * Expected response: [{ id: "guid", name: "Dublin 1" }, ...]
- */
-export async function getCities(countyId) {
-  const resp = await fetch(`${BASE_URL}/api/cities?countyId=${encodeURIComponent(countyId)}`, {
-    method: "GET",
+export const validatePscFront = (id) => api.post(`/${id}/validate-psc-front`);
+export const validatePscBack = (id) => api.post(`/${id}/validate-psc-back`);
+export const checkDedupe = (id) => api.post(`/${id}/check-dedupe`);
+export const searchCkyc = (id) => api.post(`/${id}/search-ckyc`);
+export const downloadCkyc = (id) => api.post(`/${id}/download-ckyc`);
+export const generateZip = (id) => api.post(`/${id}/generate-zip`);
+export const sendZipToSftp = (id) => api.post(`/${id}/send-zip`);
+export const checkCkycStatus = (id) => api.post(`/${id}/check-ckyc-status`);
+export const pushToInternal = (id) => api.post(`/${id}/push-to-internal`);
+
+export const getBulkUploadTemplateUrl = () =>
+  `${API_BASE_URL}/api/kyc/bulk-upload/template`;
+
+export const uploadBulkZip = (formData) =>
+  bulkApi.post("", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
   });
 
-  if (!resp.ok) {
-    throw new Error(`getCities failed: ${await readError(resp)}`);
-  }
-  return resp.json();
-}
-
-/**
- * Upload the KYC form to the server as multipart/form-data.
- * IMPORTANT:
- * - countyId/cityId MUST be GUID strings.
- * - Documents key MUST be "Documents"
- * - Do NOT set Content-Type manually.
- */
-export async function uploadKyc(form) {
-  const fd = new FormData();
-
-  // Must match C# ViewModel property names EXACTLY:
-  fd.append("FirstName", form.firstName ?? "");
-  fd.append("LastName", form.lastName ?? "");
-  fd.append("DateOfBirth", form.dob ?? ""); // yyyy-mm-dd
-  fd.append("PPSN", (form.pps ?? "").toUpperCase());
-  fd.append("Email", form.email ?? "");
-  fd.append("Phone", form.phone ?? "");
-  fd.append("AddressLine1", form.address1 ?? "");
-  fd.append("CountyId", form.countyId ?? ""); // GUID
-  fd.append("CityId", form.cityId ?? "");     // GUID
-  fd.append("Eircode", (form.eircode ?? "").toUpperCase());
-  fd.append("IsPEP", String(!!form.pep));
-  fd.append("RiskRating", form.riskRating ?? "Low"); // try "0" if enum parsing fails
-
-  (form.files || []).forEach((file) => {
-    fd.append("Documents", file);
-  });
-
-  // Debug: see what you're sending (optional)
-  // for (const [k, v] of fd.entries()) console.log("FD:", k, v);
-
-  const resp = await fetch(`${BASE_URL}/api/upload`, {
-    method: "POST",
-    body: fd,
-  });
-
-  if (!resp.ok) {
-    throw new Error(`uploadKyc failed: ${await readError(resp)}`);
-  }
-
-  // Your controller might return JSON OR redirect/HTML.
-  const contentType = resp.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return resp.json();
-  }
-  return resp.text();
-}
+export const getBulkBatches = () => bulkApi.get("");
+export const getBulkBatchSummary = (batchId) => bulkApi.get(`/${batchId}`);
+export const getBulkBatchRows = (batchId) => bulkApi.get(`/${batchId}/rows`);
+export const readBulkBatch = (batchId) => bulkApi.post(`/${batchId}/read`);
+export const importBulkBatch = (batchId) => bulkApi.post(`/${batchId}/import`);

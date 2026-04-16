@@ -1,18 +1,19 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
-import './App.css';
-import NewKycUpload from './createkycrecord/createkyc';
-import DetailsPage from './detailspage/detailspage';
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Dashboard from "./pages/Dashboard/Dashboard";
+import KycRecords from "./pages/KycRecords/KycRecords";
+import NewKycUpload from "./pages/NewKycUpload/NewKycUpload";
+import KycDetails from "./pages/KycDetails/KycDetails";
+
 function App() {
   return (
-    <div className="App">
-      <BrowserRouter>
+    <BrowserRouter>
       <Routes>
-      <Route path="/kycupload" element={<NewKycUpload />} />
-      <Route path="/details" element={<DetailsPage />} />
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/kyc-records" element={<KycRecords />} />
+        <Route path="/kyc/new" element={<NewKycUpload />} />
+        <Route path="/kyc/:id" element={<KycDetails />} />
       </Routes>
-      </BrowserRouter>
-      
-    </div>
+    </BrowserRouter>
   );
 }
 

@@ -9,9 +9,26 @@ public sealed class KycUpdationResponse
     public Guid KycUploadId { get; set; }
     public KycUploadDetails? KycUpload { get; set; }
 
-    [Required, MaxLength(60)] public string RequestRef { get; set; } = "";
+    [Required, MaxLength(60)]
+    public string RequestRef { get; set; } = "";
 
-    [MaxLength(50)] public string? CkycNumber { get; set; }
+    [Required, MaxLength(30)]
+    public string ResponseType { get; set; } = ""; // SFTP_UPLOAD or CKYC_STATUS
+
+    [Required, MaxLength(255)]
+    public string FileName { get; set; } = "";
+
+    [Required, MaxLength(100)]
+    public string ContentType { get; set; } = "application/json";
+
+    [Required]
+    public string ResponseJson { get; set; } = "{}";
+
+    [MaxLength(64)]
+    public string? ResponseHashSha256 { get; set; }
+
+    [MaxLength(50)]
+    public string? CkycNumber { get; set; }
 
     public UpdateStatus UpdateStatus { get; set; } = UpdateStatus.Failed;
 

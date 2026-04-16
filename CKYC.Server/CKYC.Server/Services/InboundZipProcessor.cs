@@ -3,7 +3,6 @@ using CKYC.Server.Models;
 using Microsoft.EntityFrameworkCore;
 using System.IO.Compression;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 
 namespace CKYC.Server.Services;
@@ -23,18 +22,16 @@ public sealed class InboundZipProcessor : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            Console.WriteLine("InboundZipProcessor tick...");
-
             try
             {
                 await ProcessOne(stoppingToken);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("InboundZipProcessor fatal error: " + ex);
+                Console.WriteLine("InboundZipProcessor fatal: " + ex);
             }
 
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken);
         }
     }
 
@@ -51,10 +48,8 @@ public sealed class InboundZipProcessor : BackgroundService
 
         if (submission == null) return;
 
-        Console.WriteLine($"Processing submission RequestRef={submission.RequestRef}");
-
         submission.Status = SubmissionStatus.Processing;
-        submission.StatusMessage = "Processing ZIP (unzipping + creating CKYC profile)...";
+        submission.StatusMessage = "Processing ZIP (extract + profile + docs)...";
         submission.FailureReason = null;
         await db.SaveChangesAsync(ct);
 
@@ -64,60 +59,54 @@ public sealed class InboundZipProcessor : BackgroundService
                 .OrderByDescending(p => p.UploadedAtUtc)
                 .FirstOrDefault();
 
-            if (pkg == null) throw new Exception("No ZIP package found for submission.");
+            if (pkg == null) throw new Exception("No package found for this submission.");
             if (pkg.ZipBytes == null || pkg.ZipBytes.Length == 0) throw new Exception("ZIP bytes are empty.");
 
-            var parsed = ExtractKycJsonAndFiles(pkg.ZipBytes);
+            var (kyc, files) = ExtractZip(pkg.ZipBytes);
 
-            var fn = Normalize(parsed.Kyc.FirstName);
-            var mn = Normalize(parsed.Kyc.MiddleName);
-            var ln = Normalize(parsed.Kyc.LastName);
-            var pn = Normalize(parsed.Kyc.PPSN);
+            ValidateKyc(kyc);
+
+            var ppsn = Normalize(kyc.PPSN);
 
             var existing = await db.CkycProfiles
                 .Include(p => p.Documents)
                 .FirstOrDefaultAsync(p =>
-                    p.DateOfBirth == parsed.Kyc.DateOfBirth &&
-                    p.FirstName.ToUpper() == fn &&
-                    p.MiddleName.ToUpper() == mn &&
-                    p.LastName.ToUpper() == ln &&
-                    p.PPSN.ToUpper() == pn, ct);
+                    p.PPSN.ToUpper() == ppsn &&
+                    p.DateOfBirth == kyc.DateOfBirth, ct);
 
             CkycProfile profile;
 
             if (existing == null)
             {
-                var newCkycNumber = await GenerateUniqueCkycNumber(db, ct);
-
                 profile = new CkycProfile
                 {
                     CkycProfileId = Guid.NewGuid(),
-                    CkycNumber = newCkycNumber,
+                    CkycNumber = await GenerateUniqueCkycNumber(db, ct),
                     IdentityHash = "",
 
-                    FirstName = parsed.Kyc.FirstName.Trim(),
-                    MiddleName = parsed.Kyc.MiddleName.Trim(),
-                    LastName = parsed.Kyc.LastName.Trim(),
-                    DateOfBirth = parsed.Kyc.DateOfBirth,
-                    PPSN = parsed.Kyc.PPSN.Trim(),
+                    FirstName = kyc.FirstName.Trim(),
+                    MiddleName = (kyc.MiddleName ?? "").Trim(),
+                    LastName = kyc.LastName.Trim(),
+                    DateOfBirth = kyc.DateOfBirth,
+                    PPSN = kyc.PPSN.Trim(),
 
-                    Nationality = parsed.Kyc.Nationality.Trim(),
-                    Gender = parsed.Kyc.Gender.Trim(),
-                    Email = parsed.Kyc.Email.Trim(),
-                    Phone = parsed.Kyc.Phone.Trim(),
+                    Nationality = (kyc.Nationality ?? "Ireland").Trim(),
+                    Gender = (kyc.Gender ?? "NA").Trim(),
+                    Email = (kyc.Email ?? "").Trim(),
+                    Phone = (kyc.Phone ?? "").Trim(),
 
-                    AddressLine1 = parsed.Kyc.AddressLine1.Trim(),
-                    City = parsed.Kyc.City.Trim(),
-                    County = parsed.Kyc.County.Trim(),
-                    Eircode = parsed.Kyc.Eircode.Trim(),
-                    Country = parsed.Kyc.Country.Trim(),
+                    AddressLine1 = (kyc.AddressLine1 ?? "").Trim(),
+                    City = (kyc.City ?? "").Trim(),
+                    County = (kyc.County ?? "").Trim(),
+                    Eircode = (kyc.Eircode ?? "").Trim(),
+                    Country = (kyc.Country ?? "Ireland").Trim(),
 
-                    Occupation = parsed.Kyc.Occupation.Trim(),
-                    EmployerName = parsed.Kyc.EmployerName.Trim(),
-                    SourceOfFunds = parsed.Kyc.SourceOfFunds.Trim(),
+                    Occupation = (kyc.Occupation ?? "").Trim(),
+                    EmployerName = (kyc.EmployerName ?? "").Trim(),
+                    SourceOfFunds = (kyc.SourceOfFunds ?? "").Trim(),
 
-                    IsPEP = parsed.Kyc.IsPEP,
-                    RiskRating = (RiskRating)parsed.Kyc.RiskRating,
+                    IsPEP = kyc.IsPEP,
+                    RiskRating = (RiskRating)kyc.RiskRating,
 
                     CreatedAtUtc = DateTimeOffset.UtcNow,
                     UpdatedAtUtc = DateTimeOffset.UtcNow
@@ -129,40 +118,45 @@ public sealed class InboundZipProcessor : BackgroundService
             {
                 profile = existing;
 
-                profile.MiddleName = parsed.Kyc.MiddleName.Trim();
-                profile.Email = parsed.Kyc.Email.Trim();
-                profile.Phone = parsed.Kyc.Phone.Trim();
-                profile.AddressLine1 = parsed.Kyc.AddressLine1.Trim();
-                profile.City = parsed.Kyc.City.Trim();
-                profile.County = parsed.Kyc.County.Trim();
-                profile.Eircode = parsed.Kyc.Eircode.Trim();
-                profile.Country = parsed.Kyc.Country.Trim();
-                profile.Occupation = parsed.Kyc.Occupation.Trim();
-                profile.EmployerName = parsed.Kyc.EmployerName.Trim();
-                profile.SourceOfFunds = parsed.Kyc.SourceOfFunds.Trim();
-                profile.IsPEP = parsed.Kyc.IsPEP;
-                profile.RiskRating = (RiskRating)parsed.Kyc.RiskRating;
+                profile.FirstName = kyc.FirstName.Trim();
+                profile.MiddleName = (kyc.MiddleName ?? "").Trim();
+                profile.LastName = kyc.LastName.Trim();
+                profile.Email = (kyc.Email ?? "").Trim();
+                profile.Phone = (kyc.Phone ?? "").Trim();
+                profile.AddressLine1 = (kyc.AddressLine1 ?? "").Trim();
+                profile.City = (kyc.City ?? "").Trim();
+                profile.County = (kyc.County ?? "").Trim();
+                profile.Eircode = (kyc.Eircode ?? "").Trim();
+                profile.Country = (kyc.Country ?? "Ireland").Trim();
+                profile.Occupation = (kyc.Occupation ?? "").Trim();
+                profile.EmployerName = (kyc.EmployerName ?? "").Trim();
+                profile.SourceOfFunds = (kyc.SourceOfFunds ?? "").Trim();
+                profile.IsPEP = kyc.IsPEP;
+                profile.RiskRating = (RiskRating)kyc.RiskRating;
                 profile.UpdatedAtUtc = DateTimeOffset.UtcNow;
             }
 
-            foreach (var f in parsed.Files.Where(x => !x.Name.Equals("kyc.json", StringComparison.OrdinalIgnoreCase)))
+            foreach (var f in files.Where(x => !x.Name.Equals("kyc.json", StringComparison.OrdinalIgnoreCase)))
             {
                 if (f.Bytes == null || f.Bytes.Length == 0) continue;
 
-                var fileHash = Sha256Hex(f.Bytes);
+                var hash = Sha256Hex(f.Bytes);
 
-                var docExists = await db.CkycDocuments.AnyAsync(d => d.FileHashSha256 == fileHash, ct);
+                var docExists = await db.CkycDocuments
+                    .AsNoTracking()
+                    .AnyAsync(d => d.FileHashSha256 == hash, ct);
+
                 if (docExists) continue;
 
                 profile.Documents.Add(new CkycDocument
                 {
                     CkycDocumentId = Guid.NewGuid(),
                     CkycProfileId = profile.CkycProfileId,
-                    DocumentType = DocumentType.Other,
+                    DocumentType = MapDocumentTypeFromFileName(f.Name),
                     FileName = f.Name,
                     ContentType = GuessContentType(f.Name),
                     FileSizeBytes = f.Bytes.LongLength,
-                    FileHashSha256 = fileHash,
+                    FileHashSha256 = hash,
                     FileBytes = f.Bytes,
                     UploadedAtUtc = DateTimeOffset.UtcNow
                 });
@@ -171,29 +165,30 @@ public sealed class InboundZipProcessor : BackgroundService
             submission.LinkedCkycProfileId = profile.CkycProfileId;
             submission.CkycNumber = profile.CkycNumber;
             submission.Status = SubmissionStatus.Success;
-            submission.StatusMessage = "Profile created/updated successfully.";
+            submission.StatusMessage = "Processed OK (profile + docs saved).";
             submission.ProcessedAtUtc = DateTime.UtcNow;
 
             await db.SaveChangesAsync(ct);
 
-            Console.WriteLine($"Submission {submission.RequestRef} -> Success, CKYC={submission.CkycNumber}");
+            Console.WriteLine($"Processed submission {submission.RequestRef} => CKYC={submission.CkycNumber}");
         }
         catch (Exception ex)
         {
             submission.Status = SubmissionStatus.Failed;
-            submission.FailureReason = ex.Message;
             submission.StatusMessage = "Processing failed.";
+            submission.FailureReason = ex.Message;
             submission.ProcessedAtUtc = DateTime.UtcNow;
+
             await db.SaveChangesAsync(ct);
 
-            Console.WriteLine($"Submission {submission.RequestRef} -> Failed: {ex.Message}");
+            Console.WriteLine($"Submission {submission.RequestRef} FAILED: {ex.Message}");
         }
     }
 
-    private static (KycJson Kyc, List<(string Name, byte[] Bytes)> Files) ExtractKycJsonAndFiles(byte[] zipBytes)
+    private static (KycJson Kyc, List<(string Name, byte[] Bytes)> Files) ExtractZip(byte[] zipBytes)
     {
         using var ms = new MemoryStream(zipBytes);
-        using var archive = new ZipArchive(ms, ZipArchiveMode.Read, leaveOpen: false);
+        using var archive = new ZipArchive(ms, ZipArchiveMode.Read);
 
         KycJson? kyc = null;
         var files = new List<(string Name, byte[] Bytes)>();
@@ -211,28 +206,22 @@ public sealed class InboundZipProcessor : BackgroundService
 
             if (entry.Name.Equals("kyc.json", StringComparison.OrdinalIgnoreCase))
             {
-                var opts = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                };
-
+                var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 kyc = JsonSerializer.Deserialize<KycJson>(bytes, opts)
-                    ?? throw new Exception("kyc.json is invalid JSON.");
+                      ?? throw new Exception("kyc.json invalid JSON.");
             }
-        }
-
-        if (kyc != null &&
-            (string.IsNullOrWhiteSpace(kyc.FirstName) ||
-             string.IsNullOrWhiteSpace(kyc.MiddleName) ||
-             string.IsNullOrWhiteSpace(kyc.LastName) ||
-             string.IsNullOrWhiteSpace(kyc.PPSN) ||
-             kyc.DateOfBirth == default))
-        {
-            throw new Exception("kyc.json missing required fields (firstName/middleName/lastName/ppsn/dateOfBirth).");
         }
 
         if (kyc == null) throw new Exception("kyc.json not found inside ZIP.");
         return (kyc, files);
+    }
+
+    private static void ValidateKyc(KycJson kyc)
+    {
+        if (string.IsNullOrWhiteSpace(kyc.FirstName)) throw new Exception("kyc.json missing firstName.");
+        if (string.IsNullOrWhiteSpace(kyc.LastName)) throw new Exception("kyc.json missing lastName.");
+        if (string.IsNullOrWhiteSpace(kyc.PPSN)) throw new Exception("kyc.json missing ppsn.");
+        if (kyc.DateOfBirth == default) throw new Exception("kyc.json missing dateOfBirth.");
     }
 
     private static async Task<string> GenerateUniqueCkycNumber(CkycDbContext db, CancellationToken ct)
@@ -249,6 +238,21 @@ public sealed class InboundZipProcessor : BackgroundService
         return "CKYC-" + Guid.NewGuid().ToString("N")[..12].ToUpperInvariant();
     }
 
+    // ✅ UPDATED: mapping based on filename (ZipBuilder naming)
+    private static DocumentType MapDocumentTypeFromFileName(string fileName)
+    {
+        var n = (fileName ?? "").Trim().ToLowerInvariant();
+
+        if (n.StartsWith("pscfront")) return DocumentType.PSCFront;
+        if (n.StartsWith("pscback")) return DocumentType.PSCBack;
+
+        // fallback if you ever use other patterns
+        if (n.Contains("psc") && n.Contains("front")) return DocumentType.PSCFront;
+        if (n.Contains("psc") && n.Contains("back")) return DocumentType.PSCBack;
+
+        return DocumentType.Other;
+    }
+
     private static string GuessContentType(string fileName)
     {
         var ext = Path.GetExtension(fileName).ToLowerInvariant();
@@ -262,8 +266,7 @@ public sealed class InboundZipProcessor : BackgroundService
         };
     }
 
-    private static string Normalize(string s)
-        => (s ?? "").Trim().ToUpperInvariant();
+    private static string Normalize(string s) => (s ?? "").Trim().ToUpperInvariant();
 
     private static string Sha256Hex(byte[] bytes)
     {
@@ -275,25 +278,25 @@ public sealed class InboundZipProcessor : BackgroundService
     private sealed class KycJson
     {
         public string FirstName { get; set; } = "";
-        public string MiddleName { get; set; } = "";
+        public string? MiddleName { get; set; }
         public string LastName { get; set; } = "";
         public DateOnly DateOfBirth { get; set; }
         public string PPSN { get; set; } = "";
 
-        public string Nationality { get; set; } = "Ireland";
-        public string Gender { get; set; } = "NA";
-        public string Email { get; set; } = "";
-        public string Phone { get; set; } = "";
+        public string? Nationality { get; set; }
+        public string? Gender { get; set; }
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
 
-        public string AddressLine1 { get; set; } = "";
-        public string City { get; set; } = "";
-        public string County { get; set; } = "";
-        public string Eircode { get; set; } = "";
-        public string Country { get; set; } = "Ireland";
+        public string? AddressLine1 { get; set; }
+        public string? City { get; set; }
+        public string? County { get; set; }
+        public string? Eircode { get; set; }
+        public string? Country { get; set; }
 
-        public string Occupation { get; set; } = "";
-        public string EmployerName { get; set; } = "";
-        public string SourceOfFunds { get; set; } = "";
+        public string? Occupation { get; set; }
+        public string? EmployerName { get; set; }
+        public string? SourceOfFunds { get; set; }
 
         public bool IsPEP { get; set; }
         public short RiskRating { get; set; }

@@ -10,7 +10,11 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.AddDbContext<CkycDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("CkycDb")));
+builder.Services.Configure<SftpInboundOptions>(
+    builder.Configuration.GetSection("SftpInbound"));
+builder.Services.AddHostedService<SftpInboundPuller>();
 builder.Services.AddHostedService<InboundZipProcessor>();
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

@@ -9,9 +9,9 @@ public static class ZipBuilder
     public static byte[] BuildKycZip(KycUploadDetails upload)
     {
         using var ms = new MemoryStream();
+
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
         {
-            // 1) kyc.json (camelCase keys; CKYC processor supports it)
             var kyc = new
             {
                 firstName = upload.FirstName,
@@ -40,21 +40,40 @@ public static class ZipBuilder
             var kycEntry = zip.CreateEntry("kyc.json");
             using (var entryStream = kycEntry.Open())
             using (var writer = new StreamWriter(entryStream))
+            {
                 writer.Write(kycJson);
+            }
 
-            // 2) documents
             foreach (var img in upload.Images)
             {
-                var safeName = string.IsNullOrWhiteSpace(img.FileName)
-                    ? $"{img.KycUploadImageId}.bin"
-                    : img.FileName;
+                if (img.ImageBytes == null || img.ImageBytes.Length == 0) continue;
 
-                var docEntry = zip.CreateEntry(safeName);
+                var ext = Path.GetExtension(img.FileName ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(ext))
+                    ext = GuessExtFromContentType(img.ContentType);
+
+                var entryName = img.DocumentType switch
+                {
+                    DocumentType.PSCFront => $"PSCFront{ext}",
+                    DocumentType.PSCBack => $"PSCBack{ext}",
+                    _ => $"{img.DocumentType}_{img.KycUploadImageId}{ext}"
+                };
+
+                var docEntry = zip.CreateEntry(entryName);
                 using var entryStream = docEntry.Open();
                 entryStream.Write(img.ImageBytes, 0, img.ImageBytes.Length);
             }
         }
 
         return ms.ToArray();
+    }
+
+    private static string GuessExtFromContentType(string? contentType)
+    {
+        var ct = (contentType ?? "").ToLowerInvariant();
+        if (ct.Contains("jpeg")) return ".jpg";
+        if (ct.Contains("png")) return ".png";
+        if (ct.Contains("pdf")) return ".pdf";
+        return ".bin";
     }
 }

@@ -12,7 +12,9 @@ public enum DocumentType : short
     IRP = 3,
     DrivingLicense = 4,
     UtilityBill = 5,
-    BankStatement = 6
+    BankStatement = 6,
+    PSCFront = 10,
+    PSCBack = 11
 }
 
 public enum VerificationStatus : short { NeedsReview = 0, Verified = 1, Rejected = 2 }

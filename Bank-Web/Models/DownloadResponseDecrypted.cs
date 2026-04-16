@@ -4,21 +4,23 @@ namespace Bank.Web.Models;
 
 public sealed class DownloadResponseDecrypted
 {
-    [Key] public Guid DownloadRespDecId { get; set; } = Guid.NewGuid();
+    [Key] public Guid DownloadResponseDecryptedId { get; set; } = Guid.NewGuid();
 
     public Guid KycUploadId { get; set; }
     public KycUploadDetails? KycUpload { get; set; }
 
-    [Required, MaxLength(60)] public string RequestRef { get; set; } = "";
+    [Required, MaxLength(50)]
+    public string CkycNumber { get; set; } = "";
 
-    [Required, MaxLength(50)] public string CkycNumber { get; set; } = "";
+    [Required, MaxLength(64)]
+    public string ResponseHashSha256 { get; set; } = "";
 
-    public DownloadStatus DownloadStatus { get; set; } = DownloadStatus.Failed;
+    // Store plain JSON (decrypted)
+    public string ResponseJson { get; set; } = "";
+   
+    [Required]
+    public string PayloadJson { get; set; } = "";
 
-    // jsonb (simple mapping for demo)
-    public string PayloadJson { get; set; } = "{}";
 
-    public string? Message { get; set; }
-
-    public DateTimeOffset DecryptedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }

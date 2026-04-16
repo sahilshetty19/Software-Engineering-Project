@@ -191,6 +191,95 @@ namespace Bank_Web.Migrations
                     b.ToTable("BankEmployee", (string)null);
                 });
 
+            modelBuilder.Entity("Bank.Web.Models.BulkUploadBatch", b =>
+                {
+                    b.Property<Guid>("BulkUploadBatchId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("FailedRows")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StoredFileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<int>("SuccessRows")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TotalRows")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UploadedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UploadedBy")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("BulkUploadBatchId");
+
+                    b.HasIndex("UploadedAtUtc");
+
+                    b.ToTable("BulkUploadBatch", (string)null);
+                });
+
+            modelBuilder.Entity("Bank.Web.Models.BulkUploadRowResult", b =>
+                {
+                    b.Property<Guid>("BulkUploadRowResultId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BulkUploadBatchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("KycUploadId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("RowNumber")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RowRef")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.HasKey("BulkUploadRowResultId");
+
+                    b.HasIndex("BulkUploadBatchId");
+
+                    b.HasIndex("KycUploadId");
+
+                    b.HasIndex("BulkUploadBatchId", "RowRef")
+                        .IsUnique();
+
+                    b.ToTable("BulkUploadRowResult", (string)null);
+                });
+
             modelBuilder.Entity("Bank.Web.Models.City", b =>
                 {
                     b.Property<Guid>("CityId")
@@ -297,7 +386,7 @@ namespace Bank_Web.Migrations
 
             modelBuilder.Entity("Bank.Web.Models.DownloadResponseDecrypted", b =>
                 {
-                    b.Property<Guid>("DownloadRespDecId")
+                    b.Property<Guid>("DownloadResponseDecryptedId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
@@ -306,28 +395,26 @@ namespace Bank_Web.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
-                    b.Property<DateTimeOffset>("DecryptedAtUtc")
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<short>("DownloadStatus")
-                        .HasColumnType("smallint");
 
                     b.Property<Guid>("KycUploadId")
                         .HasColumnType("uuid");
-
-                    b.Property<string>("Message")
-                        .HasColumnType("text");
 
                     b.Property<string>("PayloadJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
 
-                    b.Property<string>("RequestRef")
+                    b.Property<string>("ResponseHashSha256")
                         .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("character varying(60)");
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
-                    b.HasKey("DownloadRespDecId");
+                    b.Property<string>("ResponseJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("DownloadResponseDecryptedId");
 
                     b.HasIndex("KycUploadId");
 
@@ -336,41 +423,31 @@ namespace Bank_Web.Migrations
 
             modelBuilder.Entity("Bank.Web.Models.DownloadResponseEncrypted", b =>
                 {
-                    b.Property<Guid>("DownloadRespEncId")
+                    b.Property<Guid>("DownloadResponseEncryptedId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<string>("CipherAlgorithm")
+                    b.Property<string>("CkycNumber")
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
-                    b.Property<string>("CiphertextBase64")
-                        .IsRequired()
-                        .HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("IvBase64")
+                    b.Property<byte[]>("EncryptedResponseBytes")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("KeyId")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasColumnType("bytea");
 
                     b.Property<Guid>("KycUploadId")
                         .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("ReceivedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("RequestRef")
+                    b.Property<string>("ResponseHashSha256")
                         .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("character varying(60)");
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
-                    b.HasKey("DownloadRespEncId");
+                    b.HasKey("DownloadResponseEncryptedId");
 
                     b.HasIndex("KycUploadId");
 
@@ -387,6 +464,16 @@ namespace Bank_Web.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
                     b.Property<Guid>("KycUploadId")
                         .HasColumnType("uuid");
 
@@ -400,6 +487,19 @@ namespace Bank_Web.Migrations
                         .IsRequired()
                         .HasMaxLength(60)
                         .HasColumnType("character varying(60)");
+
+                    b.Property<string>("ResponseHashSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ResponseJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ResponseType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<short>("UpdateStatus")
                         .HasColumnType("smallint");
@@ -648,80 +748,103 @@ namespace Bank_Web.Migrations
                     b.ToTable("KYCUpload_Images", (string)null);
                 });
 
-            modelBuilder.Entity("Bank.Web.Models.SearchResponseDecrypted", b =>
+            modelBuilder.Entity("Bank.Web.Models.KycWorkflowExecutionLog", b =>
                 {
-                    b.Property<Guid>("SearchRespDecId")
+                    b.Property<Guid>("KycWorkflowExecutionLogId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("DecryptedAtUtc")
+                    b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ErrorDetails")
+                        .HasColumnType("text");
 
                     b.Property<Guid>("KycUploadId")
                         .HasColumnType("uuid");
 
-                    b.Property<float?>("MatchScore")
-                        .HasColumnType("real");
-
-                    b.Property<string>("MatchedCkycNumber")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
                     b.Property<string>("Message")
                         .HasColumnType("text");
 
-                    b.Property<string>("RequestRef")
+                    b.Property<DateTimeOffset>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StepName")
                         .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("character varying(60)");
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
-                    b.Property<short>("SearchStatus")
-                        .HasColumnType("smallint");
-
-                    b.HasKey("SearchRespDecId");
+                    b.HasKey("KycWorkflowExecutionLogId");
 
                     b.HasIndex("KycUploadId");
+
+                    b.HasIndex("KycUploadId", "StartedAtUtc");
+
+                    b.ToTable("KycWorkflowExecutionLog", (string)null);
+                });
+
+            modelBuilder.Entity("Bank.Web.Models.SearchResponseDecrypted", b =>
+                {
+                    b.Property<Guid>("SearchResponseDecryptedId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DecryptedJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("KycUploadId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SearchResponseEncryptedId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("SearchResponseDecryptedId");
+
+                    b.HasIndex("KycUploadId");
+
+                    b.HasIndex("SearchResponseEncryptedId");
 
                     b.ToTable("SearchResponseDecrypted", (string)null);
                 });
 
             modelBuilder.Entity("Bank.Web.Models.SearchResponseEncrypted", b =>
                 {
-                    b.Property<Guid>("SearchRespEncId")
+                    b.Property<Guid>("SearchResponseEncryptedId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<string>("CipherAlgorithm")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("CiphertextBase64")
+                    b.Property<byte[]>("EncryptedRequestBytes")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("bytea");
 
-                    b.Property<string>("IvBase64")
+                    b.Property<byte[]>("EncryptedResponseBytes")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("KeyId")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasColumnType("bytea");
 
                     b.Property<Guid>("KycUploadId")
                         .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("ReceivedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("RequestRef")
+                    b.Property<string>("RequestHashSha256")
                         .IsRequired()
-                        .HasMaxLength(60)
-                        .HasColumnType("character varying(60)");
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
-                    b.HasKey("SearchRespEncId");
+                    b.Property<string>("ResponseHashSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("SearchResponseEncryptedId");
 
                     b.HasIndex("KycUploadId");
 
@@ -797,6 +920,24 @@ namespace Bank_Web.Migrations
                     b.Navigation("City");
 
                     b.Navigation("County");
+
+                    b.Navigation("KycUpload");
+                });
+
+            modelBuilder.Entity("Bank.Web.Models.BulkUploadRowResult", b =>
+                {
+                    b.HasOne("Bank.Web.Models.BulkUploadBatch", "BulkUploadBatch")
+                        .WithMany("RowResults")
+                        .HasForeignKey("BulkUploadBatchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Bank.Web.Models.KycUploadDetails", "KycUpload")
+                        .WithMany()
+                        .HasForeignKey("KycUploadId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("BulkUploadBatch");
 
                     b.Navigation("KycUpload");
                 });
@@ -886,6 +1027,17 @@ namespace Bank_Web.Migrations
                     b.Navigation("KycUpload");
                 });
 
+            modelBuilder.Entity("Bank.Web.Models.KycWorkflowExecutionLog", b =>
+                {
+                    b.HasOne("Bank.Web.Models.KycUploadDetails", "KycUpload")
+                        .WithMany()
+                        .HasForeignKey("KycUploadId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("KycUpload");
+                });
+
             modelBuilder.Entity("Bank.Web.Models.SearchResponseDecrypted", b =>
                 {
                     b.HasOne("Bank.Web.Models.KycUploadDetails", "KycUpload")
@@ -893,6 +1045,14 @@ namespace Bank_Web.Migrations
                         .HasForeignKey("KycUploadId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("Bank.Web.Models.SearchResponseEncrypted", "Encrypted")
+                        .WithMany()
+                        .HasForeignKey("SearchResponseEncryptedId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Encrypted");
 
                     b.Navigation("KycUpload");
                 });
@@ -922,6 +1082,11 @@ namespace Bank_Web.Migrations
             modelBuilder.Entity("Bank.Web.Models.BankCustomerDetails", b =>
                 {
                     b.Navigation("CustomerImages");
+                });
+
+            modelBuilder.Entity("Bank.Web.Models.BulkUploadBatch", b =>
+                {
+                    b.Navigation("RowResults");
                 });
 
             modelBuilder.Entity("Bank.Web.Models.County", b =>

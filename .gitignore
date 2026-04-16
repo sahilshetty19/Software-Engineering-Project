@@ -6,3 +6,5 @@ obj/
 *.suo
 *.vsidx
 appsettings.Development.json
+Bank-Web/BulkUploads/
+Bank-Web/wwwroot/uploads/

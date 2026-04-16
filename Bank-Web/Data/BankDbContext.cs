@@ -27,10 +27,13 @@ public sealed class BankDbContext : DbContext
 
     public DbSet<County> Counties => Set<County>();
     public DbSet<City> Cities => Set<City>();
+    public DbSet<BulkUploadBatch> BulkUploadBatches => Set<BulkUploadBatch>();
+    public DbSet<BulkUploadRowResult> BulkUploadRowResults => Set<BulkUploadRowResult>();
+    public DbSet<KycWorkflowExecutionLog> KycWorkflowExecutionLogs => Set<KycWorkflowExecutionLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Table names (match your Excel)
+        
         modelBuilder.Entity<KycUploadDetails>().ToTable("KYCUpload_Details");
         modelBuilder.Entity<KycUploadImage>().ToTable("KYCUpload_Images");
         modelBuilder.Entity<ZipFileUploadDetails>().ToTable("ZipFileUploadDetails");
@@ -44,6 +47,9 @@ public sealed class BankDbContext : DbContext
         modelBuilder.Entity<County>().ToTable("County");
         modelBuilder.Entity<City>().ToTable("City");
         modelBuilder.Entity<BankEmployee>().ToTable("BankEmployee");
+        modelBuilder.Entity<BulkUploadBatch>().ToTable("BulkUploadBatch");
+        modelBuilder.Entity<BulkUploadRowResult>().ToTable("BulkUploadRowResult");
+        modelBuilder.Entity<KycWorkflowExecutionLog>().ToTable("KycWorkflowExecutionLog");
 
         // Relationships
         modelBuilder.Entity<KycUploadImage>()
@@ -113,7 +119,20 @@ public sealed class BankDbContext : DbContext
         modelBuilder.Entity<BankEmployee>()
             .HasIndex(x => x.Email)
             .IsUnique();
+        modelBuilder.Entity<BulkUploadRowResult>()
+            .HasOne(x => x.BulkUploadBatch)
+            .WithMany(x => x.RowResults)
+            .HasForeignKey(x => x.BulkUploadBatchId);
 
+        modelBuilder.Entity<BulkUploadRowResult>()
+            .HasOne(x => x.KycUpload)
+            .WithMany()
+            .HasForeignKey(x => x.KycUploadId)
+            .OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<KycWorkflowExecutionLog>()
+            .HasOne(x => x.KycUpload)
+            .WithMany()
+            .HasForeignKey(x => x.KycUploadId);
         // Indexes / uniques
         modelBuilder.Entity<KycUploadDetails>().HasIndex(x => x.RequestRef).IsUnique();
         modelBuilder.Entity<KycUploadDetails>().HasIndex(x => x.IdentityHash);
@@ -130,5 +149,22 @@ public sealed class BankDbContext : DbContext
         modelBuilder.Entity<DownloadResponseDecrypted>()
             .Property(x => x.PayloadJson)
             .HasColumnType("jsonb");
+        modelBuilder.Entity<KycUpdationResponse>()
+            .Property(x => x.ResponseJson)
+            .HasColumnType("jsonb");
+        modelBuilder.Entity<BulkUploadBatch>()
+            .HasIndex(x => x.UploadedAtUtc);
+
+        modelBuilder.Entity<BulkUploadRowResult>()
+            .HasIndex(x => x.BulkUploadBatchId);
+
+        modelBuilder.Entity<BulkUploadRowResult>()
+            .HasIndex(x => new { x.BulkUploadBatchId, x.RowRef })
+            .IsUnique();
+        modelBuilder.Entity<KycWorkflowExecutionLog>()
+            .HasIndex(x => x.KycUploadId);
+
+        modelBuilder.Entity<KycWorkflowExecutionLog>()
+            .HasIndex(x => new { x.KycUploadId, x.StartedAtUtc });
     }
 }
